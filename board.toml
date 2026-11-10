@@ -442,12 +442,19 @@ archives = [
 size_mib = 112
 root_policies = "{tree}/build/sheng-source-storage/root-policies.bin"
 kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_panic", "use_contiguous_hint=0",
-               "ml-timeout-lock-panic-scale=40", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
+               "ml-timeout-lock-panic-scale=40", "interrupt-masked-debug-mode=1", "sched_preemption_disable_debug_mode=1", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
                "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=0", "offline-legacy-register=1", "offline-legacy-gop=1",
                "offline-legacy-pm=1", "offline-legacy-validate=1", "offline-legacy-transfer=1", "offline-legacy-cpu-present=1",
                "offline-legacy-phase=4", "offline-key-events=1", "aks=1", "aks-sls=3", "offline-hid-input=1", "offline-hid-home=1",
                "touch-hid=1", "buttons=1", "log=1", "smp=1", "armcpu-spi-ipi=1", "armcpu-self-ipi=1", "data-persist=2", "memlimit-scale=4", "cpufreq=4",
-               "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1"]
+               "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1",
+               # The GPU add-on (Turnip and the Metal plug-in, arm64e) with the GPU copy to the framebuffer. The zero-copy scanout of iPadOS 17
+               # (dpu-scanout=2 dpu-linux=1 dpu-flush=1) is off: with UniXNU's GopFramebuffer on 27 no swap was ever flipped or copied (black screen).
+               # interrupt-masked-debug-mode=1 and sched_preemption_disable_debug_mode=1 (above): the DEVELOPMENT kernel's interrupt-masked
+               # and preemption-disabled checks trace instead of panicking; their iPhone limits are tick counts for a 24 MHz timebase
+               # (12000 ticks = 625 us here on the 19.2 MHz timer), and the GPU and scanout paths exceeded them.
+               "gpu-addon=1", "fb-gpu=1", "gpu-dcvs=1", "gpu-dcvs-min=6", "gpu-dcvs-max=7",
+               "gpu-irq=0"]
 
 [os_overrides."ios-27.0.1-24A446".payload.runtime]
 tool = "scripts/build-boot-runtime.py"
@@ -458,7 +465,8 @@ build = "24A446"
 data_gib = 88
 skip_setup = true
 trust_components = ["StaticTrustCache", "Cryptex1,SystemTrustCache", "Cryptex1,AppTrustCache"]
-gpu_addon = false
+# Turnip (build-turnip-darwin.py --target ios27) and the Metal plug-in against this board's NativeAdrenoABI.h.
+gpu_addon = true
 
 [os_overrides."ios-27.0.1-24A446".payload.adt]
 chip_id = "8140"
@@ -524,12 +532,19 @@ archives = [
 size_mib = 112
 root_policies = "{tree}/build/sheng-source-storage/root-policies.bin"
 kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_panic", "use_contiguous_hint=0",
-               "ml-timeout-lock-panic-scale=40", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
+               "ml-timeout-lock-panic-scale=40", "interrupt-masked-debug-mode=1", "sched_preemption_disable_debug_mode=1", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
                "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=0", "offline-legacy-register=1", "offline-legacy-gop=1",
                "offline-legacy-pm=1", "offline-legacy-validate=1", "offline-legacy-transfer=1", "offline-legacy-cpu-present=1",
                "offline-legacy-phase=4", "offline-key-events=1", "aks=1", "aks-sls=3", "offline-hid-input=1", "offline-hid-home=1",
                "touch-hid=1", "buttons=1", "log=1", "smp=1", "armcpu-spi-ipi=1", "armcpu-self-ipi=1", "data-persist=2", "memlimit-scale=4", "cpufreq=4",
-               "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1"]
+               "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1",
+               # The GPU add-on (Turnip and the Metal plug-in, arm64e) with the GPU copy to the framebuffer. The zero-copy scanout of iPadOS 17
+               # (dpu-scanout=2 dpu-linux=1 dpu-flush=1) is off: with UniXNU's GopFramebuffer on 27 no swap was ever flipped or copied (black screen).
+               # interrupt-masked-debug-mode=1 and sched_preemption_disable_debug_mode=1 (above): the DEVELOPMENT kernel's interrupt-masked
+               # and preemption-disabled checks trace instead of panicking; their iPhone limits are tick counts for a 24 MHz timebase
+               # (12000 ticks = 625 us here on the 19.2 MHz timer), and the GPU and scanout paths exceeded them.
+               "gpu-addon=1", "fb-gpu=1", "gpu-dcvs=1", "gpu-dcvs-min=6", "gpu-dcvs-max=7",
+               "gpu-irq=0"]
 
 [os_overrides."ipados-27.0.1-24A446".payload.runtime]
 tool = "scripts/build-boot-runtime.py"
@@ -540,7 +555,8 @@ build = "24A446"
 data_gib = 88
 skip_setup = true
 trust_components = ["StaticTrustCache", "Cryptex1,SystemTrustCache", "Cryptex1,AppTrustCache"]
-gpu_addon = false
+# Turnip (build-turnip-darwin.py --target ios27) and the Metal plug-in against this board's NativeAdrenoABI.h.
+gpu_addon = true
 
 [os_overrides."ipados-27.0.1-24A446".payload.adt]
 chip_id = "8142"

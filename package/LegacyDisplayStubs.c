@@ -71,13 +71,14 @@ native_ufs_dpu_map (unsigned slot, const uint64_t *pages, unsigned count)
 
 __attribute__((weak)) bool
 native_legacy_gpu_offer (void *display, void *memory, uint64_t stride,
-                         uint32_t width, uint32_t height)
+                         uint32_t width, uint32_t height, uint32_t format)
 {
   (void)display;
   (void)memory;
   (void)stride;
   (void)width;
   (void)height;
+  (void)format;
   return false;
 }
 
