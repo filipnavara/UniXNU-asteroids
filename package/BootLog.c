@@ -266,6 +266,8 @@ struct boot_log_header {
 // Writer state for the board page: 0 off, 1 waiting for the window, 2 writing, 3 stopped after errors, 4 stopped (GPT changed).
 volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
 volatile uint64_t boot_log_first_lba;
+// Why the log window was refused (the source storage runtime reports it, sheng's BootLog.c); null while it opens.
+const char *volatile boot_log_open_refusal;
 static int boot_log_started;
 static uint8_t *boot_log_buffer;   // LogMsgBlocks blocks: the message buffer, then reused for a slot and the header
 
@@ -1621,7 +1623,7 @@ static void writer(void *arg, wait_result_t result) {
   boot_log_state = 1;
   // The window exists once NativeUfs has read the root layout; until then the open is refused ("no root layout").
   while (!native_ufs_log_open(&first, &blocks, &why)) {
-    if (strcmp(why, "no root layout")) {boot_log_state = 3; return;}
+    if (strcmp(why, "no root layout")) {boot_log_open_refusal = why; boot_log_state = 3; return;}
     IOSleep(1000);
   }
   boot_log_first_lba = first;
@@ -1647,15 +1649,15 @@ static void writer(void *arg, wait_result_t result) {
   int reset_ok = 0, reset_tried = 0;
   if (&boot_reset_probe) {
     reset_ok = boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text) == 0;
-    PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset);
+    PE_parse_boot_argn("autoreset", &autoreset, sizeof autoreset);
   }
   // sheng-diag-export=<seconds of log time>: export the diagnostic files once then (set it shortly before sheng-autoreset).
   uint32_t diag_at = 0;
-  if (&boot_diag_scan && &boot_diag_stream) PE_parse_boot_argn("sheng-diag-export", &diag_at, sizeof diag_at);
+  if (&boot_diag_scan && &boot_diag_stream) PE_parse_boot_argn("diag-export", &diag_at, sizeof diag_at);
   // sheng-gpu-trace-export=<seconds>: the GPU trace directory alone, every so many seconds (the first round after one period).
   uint32_t gpu_every = 0, gpu_next = 0;
   int diag_full = 0;
-  if (&boot_diag_scan_gpu && &boot_diag_stream) PE_parse_boot_argn("sheng-gpu-trace-export", &gpu_every, sizeof gpu_every);
+  if (&boot_diag_scan_gpu && &boot_diag_stream) PE_parse_boot_argn("gpu-trace-export", &gpu_every, sizeof gpu_every);
   gpu_next = gpu_every;
   uint32_t errors = 0;
   boot_log_state = 2;
@@ -1722,13 +1724,13 @@ void boot_log_tick(unsigned now) {
   // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites a minute after the pings stop:
   // after the autoreset deadline, or when a panic parks the cores.
   uint32_t autoreset = 0;
-  if (PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset) && autoreset && &boot_reset_probe &&
+  if (PE_parse_boot_argn("autoreset", &autoreset, sizeof autoreset) && autoreset && &boot_reset_probe &&
       boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text) == 0) {
     if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
     if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
   }
   uint32_t mode = 0;
-  if (!PE_parse_boot_argn("sheng-log", &mode, sizeof mode) || mode != 1) return;
+  if (!PE_parse_boot_argn("log", &mode, sizeof mode) || mode != 1) return;
   if (!&native_ufs_log_open || !&native_ufs_log_write || !&native_ufs_log_sync) return;
   boot_log_buffer = (uint8_t *)IOMallocAligned(LogMsgBlocks * LogBlock, LogBlock);
   if (!boot_log_buffer) return;

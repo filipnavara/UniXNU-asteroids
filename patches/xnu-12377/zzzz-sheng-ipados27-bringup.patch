@@ -10,7 +10,7 @@ index 87ca424..2156540 100644
 +		/* With sheng-log=1, let the UFS log writer start first, so a failure in the display path below is logged. */
 +		extern volatile uint32_t boot_log_rounds __attribute__((weak_import));
 +		int log = 0;
-+		if (&boot_log_rounds && PE_parse_boot_argn("sheng-log", &log, sizeof(log)) && log == 1) {
++		if (&boot_log_rounds && PE_parse_boot_argn("log", &log, sizeof(log)) && log == 1) {
 +			for (int waited = 0; waited < 300 && !boot_log_rounds; waited++) {
 +				IOSleep(100);
 +			}
@@ -1368,7 +1368,7 @@ index 29d7dbe..af797d0 100644
 +#ifdef MACH_BSD
 +	/* Processes whose exceptions are dumped: launchd, plus the comma-separated names in sheng-exc-name. */
 +	char sheng_exc_names[96] = "backboardd,chronod,liveactivitiesd";
-+	PE_parse_boot_argn("sheng-exc-name", sheng_exc_names, sizeof(sheng_exc_names));
++	PE_parse_boot_argn("exc-name", sheng_exc_names, sizeof(sheng_exc_names));
 +	bool sheng_exc_match = false;
 +	if (get_bsdtask_info(task)) {
 +		const char *name = proc_best_name(get_bsdtask_info(task));

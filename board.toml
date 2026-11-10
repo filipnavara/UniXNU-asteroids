@@ -160,23 +160,23 @@ kernel_args = [
   "-no_slto_panic",                   # kept: generic, avoids the SLTO panic on this non-Apple CPU
   "ml-timeout-lock-panic-scale=40",   # kept: generic; a slow 4 KiB-page bring-up with diagnostics trips lock timeouts
   "armcpu-diagnostics=1",             # kept: generic ArmCpu, prints the CPU and GIC state; first check if interrupts fail
-  "sheng-pmgr=2",                     # kept: also the code default, but UniXNU's payload check requires it here for the UFS root
+  "pmgr=2",                     # kept: also the code default, but UniXNU's payload check requires it here for the UFS root
   # UFS root, step 2, after uke's working set (Allenwdk/UniXNU-uke board.toml) without its display and input:
   "native-ufs-root=1",                # NativeUfs publishes the OS and SystemOS windows of the userdata root image
   "native-ufs-allow-unverified=1",    # without the owner policy bundle (our NativeUfs fork); reads are not authenticated
   "offline-apfs-load=1",              # load APFS (and IOStorageFamily) so the windows' volumes appear
   "-apfs_shared_datavolume",          # as uke and sheng: the Data volume is shared with the root's volume group
-  "sheng-data-persist=2",             # Data writes go through to the store at the end of userdata
-  "sheng-memlimit-scale=4",           # patches/xnu/zzyh: per-process memory limits x4 (GPU addon footprint; iconservicesagent jetsam)
-  "sheng-staged-apps=1",              # copy the OS volume's staged system apps into Data once (their widget extensions were missing)
-  "sheng-log=1",                      # persistent kernel log at the end of userdata
+  "data-persist=2",             # Data writes go through to the store at the end of userdata
+  "memlimit-scale=4",           # patches/xnu/zzyh: per-process memory limits x4 (GPU addon footprint; iconservicesagent jetsam)
+  "staged-apps=1",              # copy the OS volume's staged system apps into Data once (their widget extensions were missing)
+  "log=1",                      # persistent kernel log at the end of userdata
   # T40d: sheng-lite=1 as sheng runs it (UniXNU-sheng board.toml): BootWatchdogPolicy.c's list of jobs with nothing to do on this
   # phone (network, iCloud, photo analysis) and the respawn loops (fairplayd.A2 relaunched every few seconds through T40c). It holds
   # T23's XPC wait cycle (identityservicesd, locationd, CommCenter). With the GPU addon it keeps bluetoothd for the addon's daemon;
   # the upstream plugin needs no daemon, so bluetoothd stays off below, with coreduetd (T35, as sheng d4c299b: one thread above
   # 50 % of a core for the whole boot).
-  "sheng-lite=1",
-  "sheng-disable-jobs=com.apple.bluetoothd,com.apple.coreduetd",
+  "lite=1",
+  "disable-jobs=com.apple.bluetoothd,com.apple.coreduetd",
   # The read-only probe (native-ufs-probe=10) found userdata at 0x256248-0x3a8bffa; see [userdata].
   # Display, CPU-rendered, as uke boots it: load IOMobileGraphicsFamily, register NativeLegacyDisplay on the GOP
   # framebuffer as the default surface, and present frames drawn by the CPU. offline-hid-* and offline-key-events publish
@@ -195,7 +195,7 @@ kernel_args = [
   # T24b: the refresh policy step of docs/porting/display.md. GopFramebuffer reports this rate through slot 301 and
   # publishes IOMFBDisplayRefresh before registerService; the render server paces its display timer by it. 120 Hz is the
   # 3a panel's rated mode, not a measured one (there is no DPU timing probe for the SM7635 yet).
-  "sheng-vsync=120",
+  "vsync=120",
   # T25: the boot progress kit's live page and UI trace (docs/guide/debugging.md of UniXNU). The trace samples the render
   # server's process, SpringBoard, and the two that decide launches and kills; one page every 8 s.
   # T25b: T25 found all four idle and liveactivitiesd in a Swift trap loop, and the last display client was pid 71
@@ -211,8 +211,8 @@ kernel_args = [
   # T28b is the same kernel with t28-power-ack=0.
   # T29: AppleKeyStore stand-in published on the persistent Data disk (package/KeyStoreProbe.cpp); T28 logging unchanged.
   # T30: T29 with the GPU (sheng-gpu-power=19 and the published Metal addon, below). t28-power-ack is off by default.
-  "sheng-build-tag=T40",
-  "sheng-cpufreq=4",                  # T35: sheng's CPU governor (touch boost, frame floor); T35b/T36a ran it stable
+  "build-tag=T40",
+  "cpufreq=4",                  # T35: sheng's CPU governor (touch boost, frame floor); T35b/T36a ran it stable
   # T40c: sheng's GPU governor (GpuPowerProbe gpuDcvsThread, UniXNU-sheng a338c71/36ec562) on, as sheng runs it. sheng's floor
   # (level 3) is 510 MHz on the 3a and held every frame there in T39b; the floor is the former fixed level 6 (763 MHz), so frames
   # never run slower than before. The ceiling is level 7 (895 MHz), not the top: nothing throttles the GPU for temperature yet, a
@@ -221,12 +221,12 @@ kernel_args = [
   # T40d idled at 763 MHz.
   # T40g: GPU-written imports (render targets) get no per-submission cache maintenance, read-only imports keep their clean (driver
   # default; sheng-gpu-import-policy=0 maintains every import as before). T40f-skip found GPU-side imports needed none.
-  "sheng-gpu-dcvs=1",
-  "sheng-gpu-dcvs-min=6",
-  "sheng-gpu-dcvs-max=7",
+  "gpu-dcvs=1",
+  "gpu-dcvs-min=6",
+  "gpu-dcvs-max=7",
   # T39b: fence waiters that sleep for the GPU interrupt timed out on 72 % of waits (the wake comes late), so they spin, as T37.
-  "sheng-gpu-irq=0",
-  "sheng-buttons=1",                  # T35: power and volume through the PMIC interrupt; T36a: work in iOS
+  "gpu-irq=0",
+  "buttons=1",                  # T35: power and volume through the PMIC interrupt; T36a: work in iOS
   "asteroids-panel=3",                # T37: iOS brightness and panel sleep over DSI0 DCS commands; T37d: works
   "boot-ui-focus4=backboardd",
   # GPU power observation (package/GpuPowerProbe.cpp), one stage per test boot: 1 reads the GCC GPU branches, then GPUCC,
@@ -258,26 +258,26 @@ kernel_args = [
   # CPU copy, which took 143-285 ms a frame and showed stale patches). T40d: the on-screen diagnostics stay on once the UI runs
   # (package default; sheng-banner=0 switches them off, the rows go to the UFS log either way), the audio DSP and battery service
   # start by default (sheng-adsp=2) and the GPU IO coherence probe is off by default (sheng-gpu-coherent=1 runs it).
-  "sheng-gpu-addon=1",
+  "gpu-addon=1",
   # Touch: package/AsteroidsTouchProbe.cpp runs stage 6 by default (asteroids-touch=<n> for another stage, 0 for none) and
   # publishes the FT3683G's contacts to TouchState; UniXNU's NativeHidInput hands them to backboardd only with this argument
   # (read by the core driver, so it stays). The boot-ui-focus rows for PerfPowerServices and SpringBoard were dropped in T32.
-  "sheng-touch-hid=1",
-  "sheng-fb-gpu=1",
+  "touch-hid=1",
+  "fb-gpu=1",
   # T40g: the 3a's panel is scanned out by VIG 0 alone (recovery's DPU registers: VIG 0 source = the frame, CTL 0 stages only VIG 0; DMA 0-2
   # empty), so direct scanout (sheng-dpu-scanout=2, drivers/GopFramebuffer fork) flushes bit 0 only. Inert while direct scanout is off.
-  "sheng-dpu-flush=1",                   # kept: UniXNU core's NativeGOPPresenter reads it (default off); without it T34 mixed GPU and CPU copy paths
+  "dpu-flush=1",                   # kept: UniXNU core's NativeGOPPresenter reads it (default off); without it T34 mixed GPU and CPU copy paths
   # T49-gpuwait (2026-10-28): zero copy without the flicker. The display bank set up as Linux does (sheng-dpu-linux=1, T40k) and the
   # flip only once the GPU has finished what it was given (GopFramebuffer's default with direct scanout; T49-probe caught 94 % of flips
   # with GPU work outstanding and 39 % of surfaces changing after the flip, T49-gpuwait 0).
-  "sheng-dpu-scanout=2",
-  "sheng-dpu-linux=1",
+  "dpu-scanout=2",
+  "dpu-linux=1",
   # T40k-spk-sd1: the speakers through the audio DSP and the TFA9873 amplifiers; 1 serves iOS without the boot test tone (2).
-  "sheng-audio=1",
+  "audio=1",
   # All eight cores, as uke boots: ArmCpu starts the secondaries through PSCI (cpu_regs below lists 0x000-0x700) with
   # sheng-smp=1, and armcpu-spi-ipi=1 is the IPI method uke uses. With one core the CPU-rendered display took minutes
   # without a first frame.
-  "sheng-smp=1",
+  "smp=1",
   "armcpu-spi-ipi=1",
   # Dropped: sheng-platform-stage and boot-ui-focus4.
   # Not set: boot-progress=2. Its only reader is kits/sheng/BootProgress.c, which this kernel does not link; the
@@ -398,3 +398,165 @@ button-names = ["hold", "voldown", "volup"]
 
 [adt.buttons.u32]
 home-button-type = 2
+
+# ---- iOS 27.0.1 (24A446, the iPhone17,4 restore image), arm64e: ./unixnu ... --os ios-27.0.1-24A446 ---------------------------------
+# sheng's iPadOS 27 board (UniXNU/UniXNU-sheng board.toml) with this board's drivers, as the iPadOS 17 sections above are uke's and
+# sheng's iPadOS 17 ones. The OS profile sets the device identity (iPhone17,4, D48AP) and the prelink roots. First bring-up: no GPU
+# add-on (the display's CPU path); the add-on is built separately for the A810 (Turnip against this board's NativeAdreno ABI).
+[os_overrides."ios-27.0.1-24A446".components]
+include = ["ArmDTPlatform", "ArmCpu", "RamBlock", "XnuPrelink", "DarwinBoot", "GopFramebuffer", "AppleKeyStoreState", "QcomGeniSpi",
+           "AdrenoPM4", "ArmSmmu4K", "AdrenoFirmware", "Adreno740", "ShengUfs", "ShengHidInput", "Sm7635Platform", "QcomPmicRtc",
+           "AdrenoMetal"]
+
+[os_overrides."ios-27.0.1-24A446".kernel]
+defconfig = "asteroids_ios27_defconfig"
+config_fragments = ["arch:configs/common.config", "soc:configs/sm7635.config", "os:configs/ipados.config"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu-12377/series", "os:patches/xnu/series", "device:patches/xnu-12377/series"]
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "component:ArmDTPlatform",
+  "component:QcomPmicRtc",
+  "component:ArmCpu",
+  "build-libpthread-kernel.py",
+  "component:ShengUfs",
+  # The signed root: the source storage runtime with this board's owner-signed policies (scripts/sign-root-policies.py).
+  "build-sheng-source-storage.py --policy-dir scripts/policies/ios-27.0.1-24A446",
+  "component:RamBlock",
+  "prepare-asteroids-gmu-votes.py --from-data",
+  "prepare-asteroids-gmu.py",
+  "prepare-asteroids-tfa.py",
+  "component:AppleKeyStoreState",
+  # Built as on iPadOS 17; the display builder compiles their sources into its archive (NATIVE_ADRENO stays off).
+  "component:Adreno740",
+  "component:ShengHidInput",
+  # The Metal accelerator on 27 (the GPU power probe allocates it): UniXNU's builder over this board's NativeAdreno.
+  "build-adreno740-accelerator.py",
+  "build-native-legacy-display-27.py",
+  # The kernel collection the 24A446 kernelcache's kexts are linked against.
+  "build-fileset-release-reference.py --tree . --lto",
+]
+
+[os_overrides."ios-27.0.1-24A446".payload]
+# The arm64e fileset kernel (about 96 MB) makes the payload volume larger than iPadOS 17's 80 MiB.
+size_mib = 112
+root_policies = "{tree}/build/sheng-source-storage/root-policies.bin"
+kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_panic", "use_contiguous_hint=0",
+               "ml-timeout-lock-panic-scale=40", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
+               "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=0", "offline-legacy-register=1", "offline-legacy-gop=1",
+               "offline-legacy-pm=1", "offline-legacy-validate=1", "offline-legacy-transfer=1", "offline-legacy-cpu-present=1",
+               "offline-legacy-phase=4", "offline-key-events=1", "aks=1", "aks-sls=3", "offline-hid-input=1", "offline-hid-home=1",
+               "touch-hid=1", "buttons=1", "log=1", "smp=1", "armcpu-spi-ipi=1", "armcpu-self-ipi=1", "data-persist=2", "memlimit-scale=4", "cpufreq=4",
+               "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1"]
+
+[os_overrides."ios-27.0.1-24A446".payload.runtime]
+tool = "scripts/build-boot-runtime.py"
+target = "ios27"
+build = "24A446"
+# The 27 root image (14.7 GiB) leaves 89.99 GiB beside the 1 GiB log reserve: a 90 GiB Data store window was refused
+# ("overlaps the root image"), the Data disk then refused writes and APFS failed. 88 leaves 2 GiB.
+data_gib = 88
+skip_setup = true
+trust_components = ["StaticTrustCache", "Cryptex1,SystemTrustCache", "Cryptex1,AppTrustCache"]
+gpu_addon = false
+
+[os_overrides."ios-27.0.1-24A446".payload.adt]
+chip_id = "8140"
+# The iOS 27 OS volume (the profile's value; the board's iPadOS 17 one would otherwise win the merge).
+root_match_volume_uuid = "634783FE-1961-47A7-959E-C2676F56F57A"
+
+[os_overrides."ios-27.0.1-24A446".adt.defaults.u32]
+# No Apple PMGR or SEP: report a virtual platform, so AMFI does not wait for an ApplePMGRNub (sheng iPadOS 27).
+vmm-present = 1
+# CONFIG_VNODES=1024 clips desiredvnodes; memory/64K + 1024 for the 4864 MiB window (sheng's value for the same window).
+"kern.maxvnodes" = 78848
+
+[os_overrides."ios-27.0.1-24A446".adt.chosen.u32]
+# This SoC has no CTRR: kernel text stays writable by hardware.
+kernel-ctrr-to-be-enabled = 0
+
+[os_overrides."ios-27.0.1-24A446"]
+# The iPadOS 17 identity: its boot manifest hash.
+remove = ["adt.chosen.bytes"]
+
+# ---- iPadOS 27.0.1 (24A446, the iPad17,1-4 restore image, iPad17,3 identity), arm64e: ./unixnu ... --os ipados-27.0.1-24A446
+# The iOS 27 block above with the iPad's chip, root volume and policies; the iPhone17,4 kernelcache leaves 35 KiB too little room for
+# this kernel's __DATA_CONST, the iPad's fits it (as on sheng). ---------------------------------
+# sheng's iPadOS 27 board (UniXNU/UniXNU-sheng board.toml) with this board's drivers, as the iPadOS 17 sections above are uke's and
+# sheng's iPadOS 17 ones. The OS profile sets the device identity (iPhone17,4, D48AP) and the prelink roots. First bring-up: no GPU
+# add-on (the display's CPU path); the add-on is built separately for the A810 (Turnip against this board's NativeAdreno ABI).
+[os_overrides."ipados-27.0.1-24A446".components]
+include = ["ArmDTPlatform", "ArmCpu", "RamBlock", "XnuPrelink", "DarwinBoot", "GopFramebuffer", "AppleKeyStoreState", "QcomGeniSpi",
+           "AdrenoPM4", "ArmSmmu4K", "AdrenoFirmware", "Adreno740", "ShengUfs", "ShengHidInput", "Sm7635Platform", "QcomPmicRtc",
+           "AdrenoMetal"]
+
+[os_overrides."ipados-27.0.1-24A446".kernel]
+defconfig = "asteroids_ios27_defconfig"
+config_fragments = ["arch:configs/common.config", "soc:configs/sm7635.config", "os:configs/ipados.config"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu-12377/series", "os:patches/xnu/series", "device:patches/xnu-12377/series"]
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "component:ArmDTPlatform",
+  "component:QcomPmicRtc",
+  "component:ArmCpu",
+  "build-libpthread-kernel.py",
+  "component:ShengUfs",
+  # The signed root: the source storage runtime with this board's owner-signed policies (scripts/sign-root-policies.py).
+  "build-sheng-source-storage.py --policy-dir scripts/policies/ipados-27.0.1-24A446",
+  "component:RamBlock",
+  "prepare-asteroids-gmu-votes.py --from-data",
+  "prepare-asteroids-gmu.py",
+  "prepare-asteroids-tfa.py",
+  "component:AppleKeyStoreState",
+  # Built as on iPadOS 17; the display builder compiles their sources into its archive (NATIVE_ADRENO stays off).
+  "component:Adreno740",
+  "component:ShengHidInput",
+  # The Metal accelerator on 27 (the GPU power probe allocates it): UniXNU's builder over this board's NativeAdreno.
+  "build-adreno740-accelerator.py",
+  "build-native-legacy-display-27.py",
+  # The kernel collection the 24A446 kernelcache's kexts are linked against.
+  "build-fileset-release-reference.py --tree . --lto",
+]
+
+[os_overrides."ipados-27.0.1-24A446".payload]
+# The arm64e fileset kernel (about 96 MB) makes the payload volume larger than iPadOS 17's 80 MiB.
+size_mib = 112
+root_policies = "{tree}/build/sheng-source-storage/root-policies.bin"
+kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_panic", "use_contiguous_hint=0",
+               "ml-timeout-lock-panic-scale=40", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
+               "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=0", "offline-legacy-register=1", "offline-legacy-gop=1",
+               "offline-legacy-pm=1", "offline-legacy-validate=1", "offline-legacy-transfer=1", "offline-legacy-cpu-present=1",
+               "offline-legacy-phase=4", "offline-key-events=1", "aks=1", "aks-sls=3", "offline-hid-input=1", "offline-hid-home=1",
+               "touch-hid=1", "buttons=1", "log=1", "smp=1", "armcpu-spi-ipi=1", "armcpu-self-ipi=1", "data-persist=2", "memlimit-scale=4", "cpufreq=4",
+               "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1"]
+
+[os_overrides."ipados-27.0.1-24A446".payload.runtime]
+tool = "scripts/build-boot-runtime.py"
+target = "ios27"
+build = "24A446"
+# The 27 root image (14.7 GiB) leaves 89.99 GiB beside the 1 GiB log reserve: a 90 GiB Data store window was refused
+# ("overlaps the root image"), the Data disk then refused writes and APFS failed. 88 leaves 2 GiB.
+data_gib = 88
+skip_setup = true
+trust_components = ["StaticTrustCache", "Cryptex1,SystemTrustCache", "Cryptex1,AppTrustCache"]
+gpu_addon = false
+
+[os_overrides."ipados-27.0.1-24A446".payload.adt]
+chip_id = "8142"
+# The iPadOS 27 OS volume (the profile's value; the board's iPadOS 17 one would otherwise win the merge).
+root_match_volume_uuid = "2F8E6EED-68D5-4261-B8A3-12571BAA2DD4"
+
+[os_overrides."ipados-27.0.1-24A446".adt.defaults.u32]
+# No Apple PMGR or SEP: report a virtual platform, so AMFI does not wait for an ApplePMGRNub (sheng iPadOS 27).
+vmm-present = 1
+# CONFIG_VNODES=1024 clips desiredvnodes; memory/64K + 1024 for the 4864 MiB window (sheng's value for the same window).
+"kern.maxvnodes" = 78848
+
+[os_overrides."ipados-27.0.1-24A446".adt.chosen.u32]
+# This SoC has no CTRR: kernel text stays writable by hardware.
+kernel-ctrr-to-be-enabled = 0
+
+[os_overrides."ipados-27.0.1-24A446"]
+# The iPadOS 17 identity: its boot manifest hash.
+remove = ["adt.chosen.bytes"]

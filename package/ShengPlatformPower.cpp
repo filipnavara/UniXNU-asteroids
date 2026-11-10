@@ -69,7 +69,7 @@ extern "C" void sheng_pmgr_run(void)
 {
   // asteroids T33: mode 2 by default; sheng-pmgr=0 publishes nothing.
   unsigned mode = 2;
-  PE_parse_boot_argn("sheng-pmgr", &mode, sizeof(mode));
+  PE_parse_boot_argn("pmgr", &mode, sizeof(mode));
   if (!mode) return;
   sheng_pmgr_observation[15] = mode;
   sheng_pmgr_observation[1] = static_cast<uint32_t>(kIOReturnError);

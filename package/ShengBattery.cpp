@@ -249,7 +249,7 @@ public:
     bool startBattery() {
         sheng_battmgr_init(&bm);
         uint32_t ma = 0;
-        if (PE_parse_boot_argn("sheng-usb-sdp-ma", &ma, sizeof ma)) bm.sdp_limit_ua = ma > 3000 ? 3000000u : ma * 1000u;
+        if (PE_parse_boot_argn("usb-sdp-ma", &ma, sizeof ma)) bm.sdp_limit_ua = ma > 3000 ? 3000000u : ma * 1000u;
         sdpLimit = bm.sdp_limit_ua;
         loop = IOWorkLoop::workLoop();
         ringLock = IOSimpleLockAlloc();

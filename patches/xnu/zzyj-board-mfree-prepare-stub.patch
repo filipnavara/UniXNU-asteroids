@@ -1,0 +1,23 @@
+--- a/osfmk/arm64/machine_routines.c	2026-11-10 19:39:57
++++ b/osfmk/arm64/machine_routines.c	2026-11-10 19:39:57
+@@ -1889,6 +1889,20 @@
+  *	Routine:        ml_static_mfree
+  *	Function:
+  */
++/*
++ * Board (asteroids): UniXNU RamBlock releases its packed Data seed through ml_static_mfree_prepare, which only the macOS
++ * profile's payload-addon-release.patch provides. RamBlock imports it weakly, but this kernel's link resolves no weak
++ * import that nothing defines. The stub answers false: RamBlock keeps the seed's memory, as without the release.
++ */
++bool ml_static_mfree_prepare(vm_offset_t vaddr, vm_size_t size);
++__attribute__((weak)) bool
++ml_static_mfree_prepare(vm_offset_t vaddr, vm_size_t size)
++{
++	(void)vaddr;
++	(void)size;
++	return false;
++}
++
+ void
+ ml_static_mfree(
+ 	vm_offset_t vaddr,

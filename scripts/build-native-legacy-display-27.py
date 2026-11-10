@@ -25,12 +25,13 @@ OUT = ROOT / 'build/native-legacy-display'
 OUT.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT / 'kits/XnuPrelink'))
 # The fixtures of the IPSW's device class: the class layouts are the same in every 24A446 kernelcache, the addresses are not.
-FIXTURES = {'d48ap': 'd48'}
+# d48ap: iPhone17,4 (remapped by remap-24A446-display-fixture.py); j820ap: iPad17,3, sheng's own fixtures (UniXNU-sheng scripts/).
+FIXTURES = {'d48ap': '-d48', 'j820ap': ''}
 DEVICE_CLASS = os.environ.get('UNIXNU_IPSW_DEVICE_CLASS', '')
 if DEVICE_CLASS not in FIXTURES:
     raise SystemExit(f'No 24A446 class fixtures for device class {DEVICE_CLASS!r} (have {sorted(FIXTURES)})')
-ABI_PATH = Path(__file__).resolve().with_name(f'legacy-display-24A446-{FIXTURES[DEVICE_CLASS]}.json')
-HID_ABI_PATH = Path(__file__).resolve().with_name(f'hid-device-24A446-{FIXTURES[DEVICE_CLASS]}.json')
+ABI_PATH = Path(__file__).resolve().with_name(f'legacy-display-24A446{FIXTURES[DEVICE_CLASS]}.json')
+HID_ABI_PATH = Path(__file__).resolve().with_name(f'hid-device-24A446{FIXTURES[DEVICE_CLASS]}.json')
 abi = json.loads(ABI_PATH.read_text())
 slide = int(abi['collection_slide'], 16)
 # Original targets are fixed collection addresses. XnuPrelink recomputes the
@@ -576,6 +577,11 @@ for sources_, extra, tag in ((smmu_sources, ('-I', str(smmu4k), '-I', str(pm4)),
         dst = board_dir / f'{src.stem}.{tag}.o'
         compile_c(src, dst, extra=extra)
         board_objects.append(dst)
+# The audio DSP firmware reader (sheng_fw_*, which AdspProbe uses): a VFS reader, so with kern_exec's BSD flags, as iPadOS 17's
+# boot progress kit builds it (build-boot-progress.py).
+compile_c(KITS / 'AdspFirmware.c', board_dir / 'AdspFirmware.bsd.o', recipe='bsd/DEVELOPMENT/kern_exec.o.json',
+          extra=('-I', str(geni), '-I', str(KITS)))
+board_objects.append(board_dir / 'AdspFirmware.bsd.o')
 compile_c(KITS / 'LegacyDisplayStubs.c', board_dir / 'LegacyDisplayStubs.o')
 board_objects.append(board_dir / 'LegacyDisplayStubs.o')
 input_objects += board_objects

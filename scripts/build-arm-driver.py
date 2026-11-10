@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Compile the generic platform expert against the actual source-kernel ABI."""
-# UniXNU's scripts/build-arm-driver.py (BSD-2-Clause-Patent) with two asteroids changes: a driver this device repository
-# carries as a fork under its old name (drivers/NativeMobileDisplay; format 2 keeps drivers/ShengUfs at its catalog path) is compiled from that fork, and
-# NativeUfs is built without the verified-root check (see the NativeUfs block below). Outputs keep the catalog's paths.
+# UniXNU's scripts/build-arm-driver.py (BSD-2-Clause-Patent) with three asteroids changes: a driver this device repository
+# carries as a fork under its old name (drivers/NativeMobileDisplay) is compiled from that fork; a driver whose configuration
+# switch is off is skipped; and on arm64 (iPadOS 17) NativeUfs is built without the verified-root check. Outputs keep the
+# catalog's paths. arm64e (iOS 27) builds ShengUfs through the source storage runtime, as upstream.
 import argparse
 import json
+import os
 import tomllib
 from pathlib import Path
-import struct
 import subprocess
+import sys
+
+from kernel_target import ARCH, TRIPLE, check_object
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -23,6 +27,14 @@ parser.add_argument('--verified-root-bundle', action='store_true', help='Select 
 parser.add_argument('--negative-verified-block', action='store_true', help='Negative own-buffer control: corrupt only the completed DMA snapshot')
 args = parser.parse_args()
 identifier = aliases.get(args.component, args.component)
+if identifier == 'ShengUfs' and ARCH == 'arm64e':
+    if any((args.negative_aes_kat, args.verified_root, args.verified_root_bundle, args.negative_verified_block)):
+        parser.error('The source UFS runtime always uses the authenticated policy bundle of the OS profile')
+    # asteroids: the tree ships two 24A446 policy directories (UniXNU's ipados-27.0.1-24A446 and this board's
+    # ios-27.0.1-24A446), so the storage builder's own search finds two; name the selected OS profile's.
+    profile_policies = ROOT / 'scripts/policies' / os.environ.get('UNIXNU_OS_PROFILE', '')
+    policy_args = ['--policy-dir', profile_policies] if os.environ.get('UNIXNU_OS_PROFILE') and profile_policies.is_dir() else []
+    raise SystemExit(subprocess.call([sys.executable, ROOT / 'scripts/build-sheng-source-storage.py', '--tree', ROOT, *policy_args]))
 metadata = catalog.get(identifier, {})
 runtime = metadata.get('legacy_name', identifier)
 args.component = runtime
@@ -36,9 +48,9 @@ if args.negative_verified_block and not args.verified_root:
     parser.error('The isolated input fault requires verified block mode')
 component = args.component
 # asteroids: format 2 builds every selected component's recipe. A driver whose configuration switch is off is linked by
-# nothing (format 1 never built it), so its recipe is skipped: the GPU driver's code goes into the display archive instead,
-# and there is no VirtIO block device.
-import os, sys
+# nothing, so its recipe is skipped: the GPU driver's code goes into the display archive instead, and there is no VirtIO
+# block device.
+import os
 switch = {'NativeAdreno': 'XNU_NATIVE_ADRENO', 'NativeVirtioBlock': 'XNU_NATIVE_VIRTIO_BLOCK'}.get(component)
 if switch and os.environ.get(switch) == '0':
     print(f'build-arm-driver: {identifier} skipped ({switch} is off)')
@@ -103,11 +115,11 @@ if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     if args.verified_root_bundle:
         command += ['-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1']
 if component == 'NativeUfs':
-    # asteroids: the verified-root bundle (owner keys and signed volume policies) is not built yet, so NativeUfs (our fork,
-    # rootstockos/NativeUfs asteroids) is built without NATIVE_VERIFIED_BLOCK; the kernel reads the root
-    # with native-ufs-allow-unverified=1.
     command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/VirtioMmioBlock'),
-                '-mgeneral-regs-only']
+                '-DNATIVE_VERIFIED_BLOCK=1', '-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1', '-mgeneral-regs-only']
+    if ARCH == 'arm64':
+        # asteroids (iPadOS 17): the root is read with native-ufs-allow-unverified=1, without the verified-root bundle.
+        command = [flag for flag in command if flag not in ('-DNATIVE_VERIFIED_BLOCK=1', '-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1')]
 if component=='NativeOfflineGPU':
     command += ['-I',str(ROOT/'drivers/VirtioMmioConsole')]
 if component in ('NativeLegacyDisplay','NativeHidInput'):
@@ -121,25 +133,13 @@ result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE
 (out / 'compile.log').write_text(result.stdout)
 if result.returncode:
     # The errors first (each with the four lines after it), then the tail: a build with many warnings pushed the errors out of
-    # the last 3500 characters, the only part CI logs kept (T40g).
+    # the last 3500 characters, the only part CI logs kept.
     lines = result.stdout.splitlines()
     errors = [n for n, line in enumerate(lines) if ' error: ' in line or line.startswith('error:')]
     excerpt = '\n'.join('\n'.join(lines[n:n + 5]) for n in errors[:10])
     raise SystemExit((excerpt + '\n...\n' if excerpt else '') + result.stdout[-3500:])
-data = destination.read_bytes()
-magic, cpu, subtype, kind, count, size = struct.unpack_from('<6I', data)
-if (magic, cpu, subtype, kind) != (0xfeedfacf, 0x100000c, 0, 1):
-    raise SystemExit('Unexpected platform object architecture')
-offset = 32
-deployment = None
-for _ in range(count):
-    cmd, length = struct.unpack_from('<II', data, offset)
-    if cmd == 0x32:
-        deployment = struct.unpack_from('<II', data, offset + 8)
-    offset += length
-if deployment != (2, 0x110000):
-    raise SystemExit(f'Unexpected platform deployment {deployment}')
+check_object(destination.read_bytes(), component)
 archive = out / ('lib' + identifier + '.a')
 archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', archive, destination], check=True)
-print(f'{identifier}: -Werror build and actual ARM64/iOS 17 object audit passed')
+print(f'{identifier}: -Werror build and {TRIPLE} object audit passed')

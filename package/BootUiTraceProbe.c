@@ -12,9 +12,19 @@
 #include <arm/cpu_internal.h>
 #include <kern/processor.h>
 #include <vm/vm_map.h>
+// xnu-12377 (iOS 27) declares vm_map_read_user and vm_map_reference here (as sheng's current BootUiTraceProbe.c).
+#if __has_include(<vm/vm_map_xnu.h>)
+#include <vm/vm_map_xnu.h>
+#endif
 #include <ipc/ipc_space.h>
 #include <ipc/ipc_port.h>
 #include <string.h>
+// arm64e (iOS 27): 47-bit user addresses and signed return addresses (sheng's current BootUiTraceProbe.c).
+#if defined(__arm64e__)
+#include <ptrauth.h>
+#define BT_USER_ADDRESS_BITS 47
+#define BT_STRIP_USER_PC(value) ((uint64_t)ptrauth_strip((void *)(uintptr_t)(value), ptrauth_key_return_address))
+#endif
 #include "BootUiTraceCore.h"
 extern void proc_name(int pid, char *buf, int size);   // bsd/sys/proc.h; the header itself clashes with the Mach types used here
 #include "BootUiTraceDetails.h"

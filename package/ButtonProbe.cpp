@@ -256,10 +256,10 @@ extern "C" bool sheng_buttons_press(uint32_t mask, uint32_t ms) {
 
 extern "C" void sheng_buttons_probe(void) {
     unsigned enabled = 0;
-    if (!PE_parse_boot_argn("sheng-buttons", &enabled, sizeof enabled) || enabled != 1 || native_buttons_stats[0]) return;
-    PE_parse_boot_argn("sheng-buttons-poll-ms", &gPollMs, sizeof gPollMs);
-    PE_parse_boot_argn("sheng-buttons-taps", &gTaps, sizeof gTaps);
-    PE_parse_boot_argn("sheng-buttons-hold-ms", &gHoldMs, sizeof gHoldMs);
+    if (!PE_parse_boot_argn("buttons", &enabled, sizeof enabled) || enabled != 1 || native_buttons_stats[0]) return;
+    PE_parse_boot_argn("buttons-poll-ms", &gPollMs, sizeof gPollMs);
+    PE_parse_boot_argn("buttons-taps", &gTaps, sizeof gTaps);
+    PE_parse_boot_argn("buttons-hold-ms", &gHoldMs, sizeof gHoldMs);
     if (gHoldMs > 500) gHoldMs = 500;
     native_buttons_stats[0] = 1;
     thread_t thread = nullptr;

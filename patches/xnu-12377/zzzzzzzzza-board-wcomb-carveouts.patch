@@ -1,0 +1,27 @@
+asteroids: write-combined and RT mappings of DRAM carveouts (the ADSP and DTB firmware regions at 0x99280000, the GMU and GPU
+regions, the audio buffers) stay Normal non-cacheable, as on xnu-10063. xnu-12377 maps VM_WIMG_WCOMB as Normal only inside the
+gDramBase window or for managed pages; a reserved carveout is neither, so it became Device-GRE, where memcpy's unaligned stores
+(and bzero's dc zva) fault: "Unaligned kernel data abort" in memmove from AdspProbe.cpp loadSegments, esr 0x96000061. On this SoC
+DRAM starts at 0x80000000 and every MMIO and PCIe window lies below it.
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -6051,7 +6051,8 @@ wimg_to_pte(unsigned int wimg, pmap_paddr_t pa)
+ 		break;
+ 	case VM_WIMG_RT:
+ 		/* DRAM outside the gDramBase window (more than one physical range) is still managed memory: Normal, not Device. */
+-		if (is_dram_addr(pa) || pa_valid(pa)) {
++		/* asteroids: and so is a reserved DRAM carveout (all DRAM is at 0x80000000 and above). */
++		if (is_dram_addr(pa) || pa_valid(pa) || pa >= 0x80000000ULL) {
+ 			pte = ARM_PTE_ATTRINDX(CACHE_ATTRINDX_RT);
+ 		} else {
+ #if HAS_FEAT_XS
+@@ -6092,7 +6093,8 @@ wimg_to_pte(unsigned int wimg, pmap_paddr_t pa)
+ 		break;
+ 	case VM_WIMG_WCOMB:
+ 		/* DRAM outside the gDramBase window (more than one physical range) is still managed memory: Normal, not Device. */
+-		if (is_dram_addr(pa) || pa_valid(pa)) {
++		/* asteroids: and so is a reserved DRAM carveout (all DRAM is at 0x80000000 and above). */
++		if (is_dram_addr(pa) || pa_valid(pa) || pa >= 0x80000000ULL) {
+ 			pte = ARM_PTE_ATTRINDX(CACHE_ATTRINDX_WRITECOMB);
+ 		} else {
+ #if HAS_FEAT_XS

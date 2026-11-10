@@ -305,13 +305,13 @@ extern "C" void sheng_cpufreq_poll(void) {
 
 extern "C" void sheng_cpufreq_probe(void) {
     unsigned mode = 0, capMHz = 0, minMHz = 0, boostMs = 1000, frameMs = 300, framePct = 60;
-    PE_parse_boot_argn("sheng-cpufreq", &mode, sizeof(mode));
-    PE_parse_boot_argn("sheng-cpufreq-cap", &capMHz, sizeof(capMHz));
-    PE_parse_boot_argn("sheng-cpufreq-min", &minMHz, sizeof(minMHz));
-    PE_parse_boot_argn("sheng-cpufreq-boost-ms", &boostMs, sizeof(boostMs));
-    PE_parse_boot_argn("sheng-cpufreq-frame-ms", &frameMs, sizeof(frameMs));
+    PE_parse_boot_argn("cpufreq", &mode, sizeof(mode));
+    PE_parse_boot_argn("cpufreq-cap", &capMHz, sizeof(capMHz));
+    PE_parse_boot_argn("cpufreq-min", &minMHz, sizeof(minMHz));
+    PE_parse_boot_argn("cpufreq-boost-ms", &boostMs, sizeof(boostMs));
+    PE_parse_boot_argn("cpufreq-frame-ms", &frameMs, sizeof(frameMs));
     gBoostMs = boostMs;
-    PE_parse_boot_argn("sheng-cpufreq-frame-pct", &framePct, sizeof(framePct));
+    PE_parse_boot_argn("cpufreq-frame-pct", &framePct, sizeof(framePct));
     gFrameMs = frameMs;
     gFramePct = framePct > 100 ? 100 : framePct;
     gFloorKHz = minMHz * 1000;

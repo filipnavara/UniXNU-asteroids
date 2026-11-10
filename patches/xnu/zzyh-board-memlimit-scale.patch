@@ -17,7 +17,7 @@
 +	static int scale = 0;
 +	if (scale == 0) {
 +		int value = 1;
-+		if (!PE_parse_boot_argn("sheng-memlimit-scale", &value, sizeof(value)) || value < 1 || value > 16) {
++		if (!PE_parse_boot_argn("memlimit-scale", &value, sizeof(value)) || value < 1 || value > 16) {
 +			value = 1;
 +		}
 +		scale = value;

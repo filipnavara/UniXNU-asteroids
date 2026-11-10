@@ -13,6 +13,8 @@ zzyg-board-class-registration.patch
 zzyh-board-memlimit-scale.patch
 # F_SETPROTECTIONCLASS succeeds without effect on volumes without content protection (FrontBoard dropped every app snapshot).
 zzyi-board-noprotect-class.patch
+# A weak ml_static_mfree_prepare for UniXNU RamBlock (only the macOS profile defines it).
+zzyj-board-mfree-prepare-stub.patch
 arch:../../../patches/xnu/zzzz-offline-owner-systemos-bringup.patch
 arch:../../../patches/xnu/zzzzz-video-console-physical-fb.patch
 arch:../../../patches/xnu/zzzzzz-video-console-text.patch

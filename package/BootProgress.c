@@ -609,7 +609,7 @@ void boot_progress_init(void) {
   if (!boot_progress_frequency) return;
   boot_progress_epoch=ticks(); state.limit=120; state.stall=30;
   state.continuous=opt==2; enabled=opt;
-  PE_parse_boot_argn("sheng-build-tag",build_tag,sizeof(build_tag));build_tag[sizeof(build_tag)-1]=0;
+  PE_parse_boot_argn("build-tag",build_tag,sizeof(build_tag));build_tag[sizeof(build_tag)-1]=0;
   if (PE_parse_boot_argn("boot-diag-resume",&resume_after,sizeof(resume_after)) && (resume_after<5 || resume_after>3600)) resume_after=0;
   boot_progress_stage("PE initialized; early native mappings");
 }
@@ -1202,7 +1202,7 @@ static void touch_overlay(void) {
   static int banner_off=-1;
   // asteroids T33 turned it off by default once the UI runs; T40d: on by default again (the diagnostics are wanted on screen during testing),
   // sheng-banner=0 switches it off. The rows reach the UFS log either way.
-  if(banner_off<0){unsigned v=1;PE_parse_boot_argn("sheng-banner",&v,sizeof(v));banner_off=v==0;}
+  if(banner_off<0){unsigned v=1;PE_parse_boot_argn("banner",&v,sizeof(v));banner_off=v==0;}
   if(banner_off)return;
   __atomic_fetch_add(&touch_passes,1,__ATOMIC_RELAXED);
   // Same rule as the text renderer: draw only while holding render_busy, so a display handoff (which takes it before
@@ -1320,7 +1320,7 @@ void boot_progress_start(void) {
     else __atomic_store_n(&process_worker_status,3,__ATOMIC_RELEASE);
   }
   if(kernel_thread_start_priority(touch_monitor,0,BASEPRI_KERNEL,&thread)==KERN_SUCCESS)thread_deallocate(thread);
-  {unsigned park=0;PE_parse_boot_argn("sheng-cpu0-park",&park,sizeof(park));
+  {unsigned park=0;PE_parse_boot_argn("cpu0-park",&park,sizeof(park));
    if(park==1 && kernel_thread_start_priority(cpu0_park,0,1,&thread)==KERN_SUCCESS)thread_deallocate(thread);}
   boot_progress_stage(state.continuous ?
     "monitor continuous: deadlines warn only; OS remains running" :

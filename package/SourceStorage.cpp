@@ -129,7 +129,7 @@ extern "C" void native_source_storage_start(void)
     boot_log_tick(0);
     unsigned log = 0;
     thread_t check;
-    if (PE_parse_boot_argn("sheng-log", &log, sizeof(log)) && log == 1 &&
+    if (PE_parse_boot_argn("log", &log, sizeof(log)) && log == 1 &&
         kernel_thread_start(boot_log_check, nullptr, &check) == KERN_SUCCESS)
         thread_deallocate(check);
 }

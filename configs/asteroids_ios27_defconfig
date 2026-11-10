@@ -1,0 +1,32 @@
+# Kernel configuration for iOS 27.0.1 (24A446, the iPhone17,4 restore image) on the Nothing Phone (3a), arm64e. sheng's
+# sheng_ipados27_defconfig (UniXNU/UniXNU-sheng) with this board's pieces. The arch, SoC and OS fragments already set ArmCpu,
+# ArmDTPlatform, source corecrypto and pthread. Select with: ./unixnu defconfig asteroids_ios27_defconfig --os ios-27.0.1-24A446
+CONFIG_XNU_BUILD_ARCHIVES=y
+CONFIG_XNU_CRYPTO_BOOTSTRAP="source"
+CONFIG_XNU_DT_PANIC_REGION=y
+CONFIG_XNU_ARMVIRT_PLATFORM=n
+# The source storage runtime, and the Metal accelerator class (build-adreno740-accelerator.py), which on sheng rides in
+# libAdreno740.a; this board compiles NativeAdreno into the display archive instead, so the accelerator is linked on its own.
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/sheng-source-storage/libShengSourceStorage.a -Wl,-force_load,{tree}/build/adreno740-accelerator/libAdreno740Accelerator.late.a"
+CONFIG_XNU_KERNEL_CHAINED_FIXUPS=y
+# The boot image carries the signed policy headers; their hash tables are userdata objects.
+CONFIG_XNU_SOURCE_STORAGE_TABLES="userdata"
+# Owner-verified UFS windows from the source storage archive authorize the mounted root.
+CONFIG_XNU_SOURCE_STORAGE=y
+CONFIG_XNU_OWNER_ROOT_AUDIT=y
+CONFIG_XNU_OWNER_ROOT_TRUST=y
+# SystemOS cryptex, boot manifest and the writable Data volume from the Data seed's RAM disk.
+CONFIG_XNU_NATIVE_RAM_BLOCK=y
+CONFIG_XNU_OWNER_CACHE_MOUNT=y
+CONFIG_XNU_OWNER_CACHE_STARTUP=y
+CONFIG_XNU_OWNER_BOOT_MANIFEST=y
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
+# The iOS 27 Data seed's volume UUID (its seed.json); replaced once the seed is built.
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="00000000-0000-0000-0000-000000000000"
+# The PMK8550 RTC behind the SPMI arbiter, which ArmDTPlatform forwards the calendar to (as on iPadOS 17).
+CONFIG_XNU_QCOM_PMIC_RTC=y
+# The display (scripts/build-native-legacy-display-27.py) carries the HID input and NativeAdreno's staged classes, as on 17;
+# NATIVE_ADRENO would link NativeAdreno a second time.
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+# CONFIG_XNU_NATIVE_ADRENO is not set

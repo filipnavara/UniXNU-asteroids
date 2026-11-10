@@ -139,7 +139,8 @@ def kernel_symbols(kernel):
     table = {}
     for line in subprocess.run([nm, '-n', kernel], capture_output=True, text=True, check=True).stdout.splitlines():
         parts = line.split()
-        if len(parts) == 3:
+        # A fileset kernel (iOS/iPadOS 27) also prints "Symbols for com.apple.kernel:" and "<file>: no symbols" lines.
+        if len(parts) == 3 and all(c in '0123456789abcdefABCDEF' for c in parts[0]):
             table.setdefault(int(parts[0], 16), parts[2])
     return table
 

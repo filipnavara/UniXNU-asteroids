@@ -1,0 +1,19 @@
+asteroids: sheng's bring-up (zzzz-sheng-ipados27-bringup.patch) lets a sender clear SIGPdisabled on a core that is in
+InitState|StartedState (sheng_sigp_recover). A starting core sets StartedState in cpu_machine_init(), inside machine_cpu_reinit(),
+so an AST from the boot CPU in that window clears the flag and leaves SIGPast pending before processor_cpu_reinit() asserts the
+flag is still set (cpu_signal 0x8 against 0x80000000). The signal bits and the IPI are already in place, so the not-yet-enabled
+check (its only caller is processor_cpu_reinit) also accepts a recovered core.
+--- a/osfmk/arm/cpu_common.c
++++ b/osfmk/arm/cpu_common.c
+@@ -943,7 +943,10 @@ assert_ml_cpu_signal_is_enabled(bool enabled)
+ 	if (enabled) {
+ 		assert((getCpuDatap()->cpu_signal & SIGPdisabled) == 0);
+ 	} else {
+-		assert3u(getCpuDatap()->cpu_signal, ==, SIGPdisabled);
++		__assert_only cpu_signal_t signals = getCpuDatap()->cpu_signal;
++		if (signals & SIGPdisabled) {
++			assert3u(signals, ==, SIGPdisabled);
++		}
+ 	}
+ }
+ 

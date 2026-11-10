@@ -536,7 +536,7 @@ void shutdownDsp(bool dtb, bool adsp) {
 
 bool start() {
     char dir[80] = "";
-    const bool chosen = PE_parse_boot_argn("sheng-adsp-fw", dir, sizeof dir) && dir[0];
+    const bool chosen = PE_parse_boot_argn("adsp-fw", dir, sizeof dir) && dir[0];
     char path[112];
     Image &dtb = gDtbImage, &adsp = gAdspImage;
     int rc = openFirmware(dtb, adsp, path, sizeof path, chosen ? dir : nullptr);
@@ -566,9 +566,13 @@ bool start() {
     }
     stage(StLoadState);
 
-    static uint8_t db[kCmdDbSize];
+    // The command DB copy (128 KiB): allocated once and kept, not static, so the kernel's __DATA fits the iPadOS 27 fileset
+    // (the prelinker places it before the first retained kext's data).
+    static uint8_t *db;
+    if (!db) db = static_cast<uint8_t *>(IOMallocData(kCmdDbSize));
+    if (!db) {fail(StRails, -12); release(dtb); release(adsp); return false;}
     uint32_t lcx = 0, lmx = 0;
-    if (!readCmdDb(db) || qcom_cmd_db_find(db, sizeof db, "lcx.lvl", &gLcx) || qcom_cmd_db_find(db, sizeof db, "lmx.lvl", &gLmx) ||
+    if (!readCmdDb(db) || qcom_cmd_db_find(db, kCmdDbSize, "lcx.lvl", &gLcx) || qcom_cmd_db_find(db, kCmdDbSize, "lmx.lvl", &gLmx) ||
         qcom_rpmh_level_index(&gLcx, 0xffffffffu, &lcx) || qcom_rpmh_level_index(&gLmx, 0xffffffffu, &lmx)) {
         fail(StRails, -2); release(dtb); release(adsp); return false;
     }
@@ -626,7 +630,7 @@ bool startGlink() {
 void adspThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "sheng-adsp");
     unsigned mode = 2;   // T40d: the DSP and GLINK start by default (battery); sheng-adsp=1 surveys only, 0 skips the DSP
-    PE_parse_boot_argn("sheng-adsp", &mode, sizeof mode);
+    PE_parse_boot_argn("adsp", &mode, sizeof mode);
     if (!mapWindow(gSmemW, kSmem, kSmemSize) || !mapWindow(gMutex, kMutex, 0x1000) || !mapWindow(gIpcc, kIpcc, 0x1000) ||
         !mapWindow(gAoss, kAoss, 0x1000) || !mapWindow(gRsc, kRscDrv, 0x10000)) {
         fail(StMapped, -12);
@@ -688,7 +692,7 @@ extern "C" int sheng_adsp_send(ShengAdspChannel *c, const void *data, uint32_t l
 
 extern "C" void sheng_adsp_probe(void) {
     unsigned mode = 2;   // as adspThread: on by default
-    PE_parse_boot_argn("sheng-adsp", &mode, sizeof mode);
+    PE_parse_boot_argn("adsp", &mode, sizeof mode);
     if (!mode || native_adsp_stats[0]) return;
     gClientLock = IOLockAlloc();
     if (gClientLock && mode >= 2) sheng_qrtr_start();  // the router link registers before the DSP can open it

@@ -17,3 +17,7 @@ arch:../../../patches/xnu/zzzzzz-video-console-text.patch
 arch:../../../patches/xnu/zzzzzzz-last-panic-print.patch
 # The watchdog launch policy logs a failure instead of panicking, ported to sheng's xnu-12377 call site.
 zzzzzzzz-watchdog-policy.patch
+# sheng's SIGP recovery can enable a starting core's signals before processor_cpu_reinit asserts they are still disabled.
+zzzzzzzzz-board-sigp-reinit-assert.patch
+# Write-combined mappings of DRAM carveouts stay Normal memory (12377 made them Device-GRE: unaligned copies faulted).
+zzzzzzzzza-board-wcomb-carveouts.patch

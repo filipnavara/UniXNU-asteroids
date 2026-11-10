@@ -290,7 +290,7 @@ bool setupSmmu() {
 constexpr uint64_t kLowBuffer = 0xe6200000ULL;
 bool setupBuffer() {
     uint64_t pa = kLowBuffer;
-    PE_parse_boot_argn("sheng-audio-pa", &pa, sizeof pa);
+    PE_parse_boot_argn("audio-pa", &pa, sizeof pa);
     if ((pa & 0xfff) || pa + kBufferBytes > 0x100000000ULL || !mapRegion(pa, kBufferBytes, gAudio.low, kIOMapWriteCombineCache)) return false;
     gAudio.bufferPa = pa;
     gAudio.dspAddr = pa | 1ull << 32;
@@ -1418,14 +1418,14 @@ extern "C" int sheng_audio_request(uint32_t selector) {
 
 extern "C" void sheng_audio_probe(void) {
     unsigned mode = 0;
-    if (!PE_parse_boot_argn("sheng-audio", &mode, sizeof mode) || !mode || mode > 15 || native_audio_stats[0]) return;
+    if (!PE_parse_boot_argn("audio", &mode, sizeof mode) || !mode || mode > 15 || native_audio_stats[0]) return;
     gAudio.mode = mode;
     gAudio.toneMs = (mode & 2) ? 1500 : 0;
     gAudio.atten = 30;
     gAudio.prm = 3;
     uint32_t port = AR_I2S_PRIMARY | AR_I2S_SD1 << 8 | 32u << 16;
-    PE_parse_boot_argn("sheng-audio-tone-ms", &gAudio.toneMs, sizeof gAudio.toneMs);
-    PE_parse_boot_argn("sheng-audio-atten", &gAudio.atten, sizeof gAudio.atten);
+    PE_parse_boot_argn("audio-tone-ms", &gAudio.toneMs, sizeof gAudio.toneMs);
+    PE_parse_boot_argn("audio-atten", &gAudio.atten, sizeof gAudio.atten);
     PE_parse_boot_argn("asteroids-audio-prm", &gAudio.prm, sizeof gAudio.prm);
     PE_parse_boot_argn("asteroids-audio-i2s", &port, sizeof port);
     // The microphone serves the plug-in's input stream by default since T96n recorded (asteroids-mic=0 leaves it off, a lower stage stops

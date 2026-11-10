@@ -467,6 +467,12 @@ static IOReturn wrappedRegister(IOUserClient *client,mach_port_t port,UInt32 typ
     return status;
 }
 static void interpose(IOUserClient *client,int pid) {
+#if __has_feature(ptrauth_calls)
+    // arm64e (iOS 27): the vtable pointer and its entries are signed, so a copied and patched vtable would not authenticate (reading
+    // the signed pointer raw faulted in memcpy). The per-client call statistics are left out there.
+    (void)client;(void)pid;
+    return;
+#endif
     if(seenClientCount>=kSeenClients)return;
     ClientStat &stat=seenClients[seenClientCount];
     memset(&stat,0,sizeof stat);
@@ -763,7 +769,9 @@ void native_legacy_display_late_probe(void) {
         // A real firmware framebuffer resource, with addresses and extent
         // obtained from the actual GOP handoff. It has no invented compatible,
         // display list, panel timing, GPU/fence completion or vendor registers.
-        native_legacy_stage=4;IOPlatformDevice *nub=new IOPlatformDevice;
+        // A plain service (sheng's change): an IOPlatformDevice expects the platform expert as its provider (compareName calls its
+        // compareNubName), not the resources; on arm64e the call through IOResources' vtable failed its PAC check during name matching.
+        native_legacy_stage=4;IOService *nub=new IOService;
         native_legacy_nub=(uintptr_t)nub;bool nubAttached=false,nubStarted=false,attached=false,started=false;
         IORegistryEntry *displayTreeParent=nullptr;bool dtAttached=false;
         IOService *parent=IOService::getResourceService();
@@ -801,9 +809,9 @@ void native_legacy_display_late_probe(void) {
                         {
                             // asteroids T33: on by default with the published Metal plugin (GPU power mode 19 and the addon), where T32 showed the
                             // GPU copy faster and free of the CPU copy's tearing and stale patches; sheng-fb-gpu=0 keeps the CPU copy.
-                            unsigned power=19,addon=0;PE_parse_boot_argn("sheng-gpu-power",&power,sizeof power);   // GpuPowerProbe's default
-                            PE_parse_boot_argn("sheng-gpu-addon",&addon,sizeof addon);
-                            unsigned gpu=power==19 && addon==1;PE_parse_boot_argn("sheng-fb-gpu",&gpu,sizeof gpu);
+                            unsigned power=19,addon=0;PE_parse_boot_argn("gpu-power",&power,sizeof power);   // GpuPowerProbe's default
+                            PE_parse_boot_argn("gpu-addon",&addon,sizeof addon);
+                            unsigned gpu=power==19 && addon==1;PE_parse_boot_argn("fb-gpu",&gpu,sizeof gpu);
                             if(gpu==1) {
                                 IOService *handoff=native_gop_presenter_create();
                                 // Not a child of the display subsystem's node: the original display code enumerates that node's children (int-075/077:

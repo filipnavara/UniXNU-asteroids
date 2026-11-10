@@ -150,7 +150,8 @@ void gmuContext(const gpb_result &r) {
 // word just read, as uke does, so a pass shows the layout, not a qualified version. No GMU register is read: the GMU's
 // clock is off until mode 7 turns it on.
 constexpr const char *kDbStatus[] = {"ok", "argument", "version", "corrupt", "duplicate", "missing"};
-alignas(8) uint8_t gCmdDb[SHENG_GMU_COMMAND_DB_BYTES];
+// The command DB copy: allocated once when it is read and kept (not static: the kernel's __DATA has to fit the iPadOS 27 fileset).
+uint8_t *gCmdDb;
 ShengGmuVoteInputs gVoteInputs;
 void logGmuClocks(const char *when, const gpb_gmu_clocks &k, int io_error) {
     IOLog("ASTEROIDS GPU: gmuclk %s pll0 mode=%08x op=%x st=%08x l=%08x a=%08x user=%08x io=%d\n", when, k.pll0_mode,
@@ -192,6 +193,8 @@ void gmuPrerequisites(const gpb_result &r) {
     }
     if (!map) {IOLog("ASTEROIDS GPU: cmddb map failed\n"); return;}
     const volatile uint32_t *db = reinterpret_cast<const volatile uint32_t *>(map->getVirtualAddress());
+    if (!gCmdDb) gCmdDb = static_cast<uint8_t *>(IOMallocData(SHENG_GMU_COMMAND_DB_BYTES));
+    if (!gCmdDb) {IOLog("ASTEROIDS GPU: no memory for the command DB copy\n"); return;}
     for (uint32_t i = 0; i < SHENG_GMU_COMMAND_DB_BYTES / 4; ++i) {const uint32_t w = db[i]; memcpy(gCmdDb + 4 * i, &w, 4);}
     map.reset();
     uint32_t version = 0, magic = 0;
@@ -446,7 +449,7 @@ void gpuGx() {
     // T34: sheng-gpu-level picks the HFI level (1 = 264 MHz ... 9 = 1050 MHz on the 3a's bin, clamped); level 1 made
     // the UI slow. 6 (763 MHz, 6.7 GB/s) stays below the top three while nothing throttles for temperature.
     unsigned level = 6;
-    PE_parse_boot_argn("sheng-gpu-level", &level, sizeof level);
+    PE_parse_boot_argn("gpu-level", &level, sizeof level);
     unsigned bw = 0;
     const unsigned perf = ShengGmuPerfVote(level, &bw);
     IOLog("ASTEROIDS GPU: gx vote perf %u bw %u (%lluk), then OOB GPU_SET\n", perf, bw,
@@ -1096,8 +1099,17 @@ extern "C" __attribute__((weak)) unsigned int native_pmap_user_mappings(ppnum_t,
 // (native_ufs_import_blocks/_read), which this board's UFS fork does not export; the weak imports cannot stay undefined in the
 // kernel link (T64's first kernel build). The stand-ins report no region, so the method refuses and the plugin's cache import
 // stays off. Weak, so real ones win once linked.
-extern "C" __attribute__((weak)) uint64_t native_ufs_import_blocks(void) {return 0;}
-extern "C" __attribute__((weak)) int native_ufs_import_read(uint64_t, uint32_t, void *) {return 0;}
+/* Board stand-ins: weak on arm64 (iPadOS 17), where a real definition may be linked beside them; strong on arm64e (iOS 27),
+ * whose chained-fixup kernel keeps every weak definition as a by-name import that the prelinker cannot bind. */
+#ifndef BOARD_STANDIN
+#if defined(__arm64e__)
+#define BOARD_STANDIN
+#else
+#define BOARD_STANDIN __attribute__((weak))
+#endif
+#endif
+extern "C" BOARD_STANDIN uint64_t native_ufs_import_blocks(void) {return 0;}
+extern "C" BOARD_STANDIN int native_ufs_import_read(uint64_t, uint32_t, void *) {return 0;}
 // T64c: the driver reads a stalled job's system-memory BOs (no kernel mapping since 882f4bf) through the board's DRAM reader; this board
 // had none, so T64b's [gpu stall] rows showed deadbeef for every IB. ml_phys_read_word maps the page with its own attribute, uncached for
 // write-combined BOs, so the word is the one in DRAM. Only XNU's own RAM is read.
@@ -1335,7 +1347,7 @@ void coherenceProbe(NativeAdrenoVm *vm, unsigned bits) {
     uint32_t *k = native_gpu_coherence;
     // Off by default since T40d: the probe passed on the 3a, but with coherence on the GPU stopped at the 134th submission
     // (every later fence wait timed out, the UI never drew). sheng-gpu-coherent=1 runs the probe.
-    const unsigned wanted = bootArg("sheng-gpu-coherent", 0);
+    const unsigned wanted = bootArg("gpu-coherent", 0);
     if (!wanted || !vm || !&native_adreno_io_coherent) {
         snprintf(native_gpu_coherence_row, sizeof native_gpu_coherence_row, "H skip (arg %u vm %d)", wanted, vm != nullptr);
         return;
@@ -1424,9 +1436,9 @@ void ucStart() {
           t1 - t0);
     if (u[3] || u[4]) {native_gpu_power_stage = 0x10f; return;}
     coherenceProbe(vm, bits);
-    if (&native_adreno_import_skip) native_adreno_import_skip = bootArg("sheng-gpu-import-skip", 1) ? 1 : 0;
-    if (&native_adreno_owner_maint) native_adreno_owner_maint = bootArg("sheng-gpu-own-maint", 0) == 1 ? 1 : 0;
-    if (&native_adreno_import_policy) native_adreno_import_policy = bootArg("sheng-gpu-import-policy", 1) ? 1 : 0;
+    if (&native_adreno_import_skip) native_adreno_import_skip = bootArg("gpu-import-skip", 1) ? 1 : 0;
+    if (&native_adreno_owner_maint) native_adreno_owner_maint = bootArg("gpu-own-maint", 0) == 1 ? 1 : 0;
+    if (&native_adreno_import_policy) native_adreno_import_policy = bootArg("gpu-import-policy", 1) ? 1 : 0;
     u[0] = 3;
     native_gpu_power_stage = 0x103;
     if (bootArg("asteroids-gpu-cp-aperture", 0) == 1) openCpAperture();
@@ -1604,8 +1616,8 @@ void userWatch() {
 // CP_NOP fence: a working line counts interrupts after the attach (bits latched by the earlier fences) and again after the fence.
 void irqAttach() {
     uint32_t *q = native_gpu_irq;
-    if (!bootArg("sheng-gpu-irq", 1)) {q[0] = 0xff; IOLog("ASTEROIDS GPU: irq off (sheng-gpu-irq=0): fence waits spin\n"); return;}
-    const unsigned us = bootArg("sheng-gpu-pause-us", 1000);
+    if (!bootArg("gpu-irq", 1)) {q[0] = 0xff; IOLog("ASTEROIDS GPU: irq off (sheng-gpu-irq=0): fence waits spin\n"); return;}
+    const unsigned us = bootArg("gpu-pause-us", 1000);
     if (us >= 20 && us <= 100000) gPauseUs = us;
     uint64_t router = ~0ull;
     q[0] = armcpu_spi_attach ? uint32_t(armcpu_spi_attach(kGpuIntid, false, gpuIrq, nullptr, &q[1], &router)) : 0xdead;
@@ -1675,13 +1687,13 @@ extern "C" volatile uint32_t native_adreno_submit_ibs[4] __attribute__((weak_imp
 void gpuDcvsThread(void *, wait_result_t) {
     if (gStartup.gpu_count < 2 || gStartup.gpu_count > 16) return;
     const unsigned top = unsigned(gStartup.gpu_count) - 1;
-    unsigned ceiling = bootArg("sheng-gpu-dcvs-max", gBootPerf ? gBootPerf : top);
+    unsigned ceiling = bootArg("gpu-dcvs-max", gBootPerf ? gBootPerf : top);
     if (ceiling < 1) ceiling = 1;
     if (ceiling > top) ceiling = top;
-    unsigned floor = bootArg("sheng-gpu-dcvs-min", 3);
+    unsigned floor = bootArg("gpu-dcvs-min", 3);
     if (floor < 1) floor = 1;
     if (floor > ceiling) floor = ceiling;
-    unsigned idleLevel = bootArg("sheng-gpu-dcvs-idle", 1);
+    unsigned idleLevel = bootArg("gpu-dcvs-idle", 1);
     if (idleLevel < 1) idleLevel = 1;
     if (idleLevel > floor) idleLevel = floor;
     const unsigned base = top > 8 ? top - 7 : 1;   // the eight highest levels go to [5..12]
@@ -1692,7 +1704,7 @@ void gpuDcvsThread(void *, wait_result_t) {
     unsigned down = 0, hold = 0;
     uint32_t lastSubmits = &native_adreno_submit_ibs ? native_adreno_submit_ibs[0] : 0;
     uint64_t boostAbs = 0, touchEnd = 0, wakeEnd = 0, wakeAbs = 0;
-    nanoseconds_to_absolutetime((uint64_t)bootArg("sheng-gpu-dcvs-boost-ms", 1000) * 1000000, &boostAbs);
+    nanoseconds_to_absolutetime((uint64_t)bootArg("gpu-dcvs-boost-ms", 1000) * 1000000, &boostAbs);
     nanoseconds_to_absolutetime(50000000ull, &wakeAbs);
     uint32_t touches = &native_hid_input_events ? native_hid_input_events[6] : 0;
     bool idle = false;
@@ -1858,7 +1870,7 @@ void probeThread(void *, wait_result_t) {
         publishMetal();
         metalReport("published");
     }
-    if (gMode >= 17 && native_gpu_power_stage == 0x108 && bootArg("sheng-gpu-dcvs", 0)) startGpuDcvs();
+    if (gMode >= 17 && native_gpu_power_stage == 0x108 && bootArg("gpu-dcvs", 0)) startGpuDcvs();
     if (gMode >= 18 && native_gpu_power_stage == 0x108) userWatch();
     native_gpu_power_stage = 4;
 }
@@ -1867,7 +1879,7 @@ void probeThread(void *, wait_result_t) {
 extern "C" void sheng_gpu_power_probe(void) {
     // asteroids T33: mode 19 (the accelerator for the published Metal plugin) by default; sheng-gpu-power=0 leaves the GPU off.
     unsigned mode = 19;
-    PE_parse_boot_argn("sheng-gpu-power", &mode, sizeof mode);
+    PE_parse_boot_argn("gpu-power", &mode, sizeof mode);
     if (!mode || native_gpu_power_stage) return;
     if (mode > GPB_MAX_MODE) {
         IOLog("ASTEROIDS GPU: sheng-gpu-power=%u refused; this build has modes 1-%u only\n", mode, GPB_MAX_MODE);

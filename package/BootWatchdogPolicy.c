@@ -73,6 +73,20 @@ static void asteroids_exec_log_start(void) {
 // ngpu 0). Instead the kernel's exec hook (UniXNU zzy-native-gpu-addon-mount.patch) runs the GPU test daemon in place of bluetoothd, which
 // this board does not use: launchd's own com.apple.bluetoothd job, only the program changes. Same idea as pandora's sweetexecswap.
 extern const char *(*native_gpu_addon_exec_substitute)(const char *path);
+/* iOS 27 (xnu-12377): the exec substitute hook and the loader-memory release are defined by iPadOS 17's xnu-10063 patches
+ * (zzy-native-gpu-addon-mount.patch, zzyj-board-mfree-prepare-stub.patch) only. Weak definitions keep the arm64e link whole;
+ * a kernel that has the real ones keeps them. Without the hook the policy's substitute is set but never called. */
+/* Board stand-ins: weak on arm64 (iPadOS 17), where a real definition may be linked beside them; strong on arm64e (iOS 27),
+ * whose chained-fixup kernel keeps every weak definition as a by-name import that the prelinker cannot bind. */
+#ifndef BOARD_STANDIN
+#if defined(__arm64e__)
+#define BOARD_STANDIN
+#else
+#define BOARD_STANDIN __attribute__((weak))
+#endif
+#endif
+BOARD_STANDIN const char *(*native_gpu_addon_exec_substitute)(const char *path) = 0;
+BOARD_STANDIN bool ml_static_mfree_prepare(unsigned long vaddr, unsigned long size) {(void)vaddr; (void)size; return false;}
 volatile uint32_t asteroids_exec_swaps;
 static const char *asteroids_exec_substitute(const char *path) {
  if(!path || strcmp(path,"/usr/sbin/bluetoothd"))return NULL;
@@ -160,19 +174,19 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  proc_t p=process;
  int enabled=0,error=0,fd=-1;int32_t result=0;
  uke_gunyah_wdt_start();
- int addon=0;PE_parse_boot_argn("sheng-gpu-addon",&addon,sizeof(addon));
+ int addon=0;PE_parse_boot_argn("gpu-addon",&addon,sizeof(addon));
  // The swap only when the addon carries the daemon (sheng-gpu-addon-swap=1, T16c); T17's addon brings the Metal plugin instead.
- int swap=0;PE_parse_boot_argn("sheng-gpu-addon-swap",&swap,sizeof(swap));
+ int swap=0;PE_parse_boot_argn("gpu-addon-swap",&swap,sizeof(swap));
  if(addon==1){asteroids_exec_log_start();if(swap==1)native_gpu_addon_exec_substitute=asteroids_exec_substitute;}
  // asteroids T33: on by default (as uke boots); sheng-disable-watchdogd=0 keeps watchdogd.
- enabled=1;PE_parse_boot_argn("sheng-disable-watchdogd",&enabled,sizeof(enabled));
- if(!PE_parse_boot_argn("sheng-disable-jobs",jobs,sizeof(jobs)))jobs[0]=0;jobs[sizeof(jobs)-1]=0;
- int lite=0;PE_parse_boot_argn("sheng-lite",&lite,sizeof(lite));if(lite!=1)lite=0;
+ enabled=1;PE_parse_boot_argn("disable-watchdogd",&enabled,sizeof(enabled));
+ if(!PE_parse_boot_argn("disable-jobs",jobs,sizeof(jobs)))jobs[0]=0;jobs[sizeof(jobs)-1]=0;
+ int lite=0;PE_parse_boot_argn("lite",&lite,sizeof(lite));if(lite!=1)lite=0;
  if(enabled!=1)enabled=0;
  for(const char *c=jobs;*c;++c)if(!((*c>='a'&&*c<='z')||(*c>='A'&&*c<='Z')||(*c>='0'&&*c<='9')||*c=='.'||*c=='-'||*c==','))return EINVAL;
  int setup=0,reset=0;
- PE_parse_boot_argn("sheng-setup",&setup,sizeof(setup));
- PE_parse_boot_argn("sheng-data-reset",&reset,sizeof(reset));   // 2 = erase Data and show the Hello page; 1 = erase Data, Setup stays skipped
+ PE_parse_boot_argn("setup",&setup,sizeof(setup));
+ PE_parse_boot_argn("data-reset",&reset,sizeof(reset));   // 2 = erase Data and show the Hello page; 1 = erase Data, Setup stays skipped
  if(reset==2)setup=1;
  if(setup==1 && (error=sheng_boot_setup_reset(p,scratch))) {
   sheng_watchdog_policy_status=error;

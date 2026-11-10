@@ -88,6 +88,7 @@ class AsteroidsBacklight : public IOService {
     // As sheng's: the vtable is copied and getMetaClass (slot 7) answers AppleARMBacklight's metaclass, so IOObjectConformsTo and the
     // sandbox's class check see AppleARMBacklight, while OSDynamicCast to IOService still works; the actions therefore cast statically.
     static inline const OSMetaClass *gAppleClass = nullptr;
+    static inline bool gImpersonating = false;
     static const OSMetaClass *appleMetaClass(const OSMetaClassBase *) {return gAppleClass;}
     bool impersonate() {
         enum {kSlots = 320, kGetMetaClass = 7};
@@ -95,6 +96,13 @@ class AsteroidsBacklight : public IOService {
         gAppleClass = name ? OSMetaClass::getMetaClassWithName(name) : nullptr;
         OSSafeReleaseNULL(name);
         if (!gAppleClass) return false;
+#if __has_feature(ptrauth_calls)
+        // arm64e (iOS 27, sheng's change): the vtable pointer and its entries are signed, so a copied vtable would not authenticate
+        // (reading the signed pointer raw faulted in memcpy). getMetaClass itself answers the AppleARMBacklight metaclass once this flag
+        // is set (its definition below the class).
+        __atomic_store_n(&gImpersonating, true, __ATOMIC_RELEASE);
+        return true;
+#endif
         uintptr_t *copy = static_cast<uintptr_t *>(IOMalloc(kSlots * sizeof(uintptr_t)));
         if (!copy) return false;
         memcpy(copy, *reinterpret_cast<uintptr_t **>(this), kSlots * sizeof(uintptr_t));
@@ -139,7 +147,23 @@ public:
         return kIOReturnSuccess;
     }
 };
+#if __has_feature(ptrauth_calls)
+// OSDefineMetaClassAndStructors(AsteroidsBacklight, IOService) with getMetaClass answering the AppleARMBacklight metaclass after
+// impersonate() (sheng's AppleARMBacklight.cpp).
+AsteroidsBacklight::MetaClass AsteroidsBacklight::gMetaClass;
+const OSMetaClass * const AsteroidsBacklight::metaClass = &AsteroidsBacklight::gMetaClass;
+const OSMetaClass * const AsteroidsBacklight::superClass = &IOService::gMetaClass;
+AsteroidsBacklight::AsteroidsBacklight(const OSMetaClass *meta) : IOService(meta) {}
+AsteroidsBacklight::~AsteroidsBacklight() {}
+const OSMetaClass *AsteroidsBacklight::getMetaClass() const
+{
+    return __atomic_load_n(&gImpersonating, __ATOMIC_ACQUIRE) && gAppleClass ? gAppleClass : &gMetaClass;
+}
+OSMetaClassConstructorInit(AsteroidsBacklight, IOService, )
+OSDefineDefaultStructors(AsteroidsBacklight, IOService)
+#else
 OSDefineMetaClassAndStructors(AsteroidsBacklight, IOService)
+#endif
 
 // Called by PanelProbe.cpp once this file's classes are registered.
 extern "C" bool asteroids_backlight_start(void) {
