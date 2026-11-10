@@ -35,7 +35,9 @@ include_dirs = ["soc:dts"]
 # that block count. The root image goes here and replaces Ubuntu Touch's data.
 [userdata]
 first_lba = 0x256248
-last_lba = 0x3a8bffa
+# 128 GB unit (A059 EEA, 2026-11-10): fastboot partition-size:userdata 0x1A6ADB3000 = 27700659 blocks (105.67 GiB); first_lba
+# assumed equal to the 256 GB unit (both end 6 blocks before a LUN end aligned the same way). Confirm with native-ufs-probe=10.
+last_lba = 0x1cc0ffa
 lba_bytes = 4096
 windows = [
   { name = "OS", component = "OS" },
@@ -139,7 +141,7 @@ size_mib = 80                         # sheng's 192 held the verified bundles an
 loader = "firmware"                   # kept: DarwinBoot is already in the asteroids firmware volume
 title = "asteroids: iPadOS from UFS"
 timeout = 3                           # kept at the default; the menu already works on the phone
-dram_size = "0x23FE00000"             # T19: /chosen/dram-size from make-asteroids-adt.py's DRAM_BASE 0x8C0000000, the high bank,
+dram_size = "0x13FE00000"             # T19: /chosen/dram-size from make-asteroids-adt.py's DRAM_BASE 0x8C0000000, the high bank,
                                       # where the XNU window lives (uke's layout; sheng keeps 0x80000000 + 2 GiB here with a high
                                       # window, which also boots). T64: the whole bank (0x8C0000000-0xAFFE00000), no GPU pool at its top
 panic_screen = true                   # kept: patches a copy of the kernel with the entry bars (blue at entry, magenta before
@@ -165,6 +167,8 @@ kernel_args = [
   "offline-apfs-load=1",              # load APFS (and IOStorageFamily) so the windows' volumes appear
   "-apfs_shared_datavolume",          # as uke and sheng: the Data volume is shared with the root's volume group
   "sheng-data-persist=2",             # Data writes go through to the store at the end of userdata
+  "sheng-memlimit-scale=4",           # patches/xnu/zzyh: per-process memory limits x4 (GPU addon footprint; iconservicesagent jetsam)
+  "sheng-staged-apps=1",              # copy the OS volume's staged system apps into Data once (their widget extensions were missing)
   "sheng-log=1",                      # persistent kernel log at the end of userdata
   # T40d: sheng-lite=1 as sheng runs it (UniXNU-sheng board.toml): BootWatchdogPolicy.c's list of jobs with nothing to do on this
   # phone (network, iCloud, photo analysis) and the respawn loops (fairplayd.A2 relaunched every few seconds through T40c). It holds
@@ -296,7 +300,7 @@ persistent_data = true                 # with sheng-data-persist=2, Data is not 
 # maps the whole window twice before the MMU is on, and UniXNU's native-4k-bootstrap-capacity patch holds 16 table pages, enough
 # for 6 GiB (two roots and seven 1 GiB pages per mapping). DarwinBoot takes the window from the start of the run and accepts at
 # most 8 GiB.
-owned_memory_size = "0x180000000"
+owned_memory_size = "0x130000000"   # 8 GB unit: 4.75 GiB (T19 value); 6 GiB ran past DRAM end 0xA00000000
 
 # The device firmware: our Mu-Silicium port (VolcanoPkg + asteroidsPkg) with UniXNU and DarwinBoot added.
 # The 3a's ABL takes the ramdisk from init_boot and ignores the boot image's own: the initrd it passed was the

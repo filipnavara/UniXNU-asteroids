@@ -1,0 +1,43 @@
+--- a/bsd/kern/kern_memorystatus.c	2026-11-10 18:15:28
++++ b/bsd/kern/kern_memorystatus.c	2026-11-10 18:15:28
+@@ -180,10 +180,30 @@
+  * The CACHE_*** macros are use to cache the limit that will
+  * soon be in effect down in the ledgers.
+  */
++
++/*
++ * Board (asteroids): sheng-memlimit-scale=<n> (1..16, default 1) multiplies every positive per-process memory limit. Each process
++ * that maps the GPU addon (Turnip, the metal2vulkan bridge, the Metal plugin) carries far more footprint than on the original
++ * tablet, and the original limits then kill small services such as iconservicesagent (per-process-limit), which leaves icons,
++ * widgets and app snapshots unrendered. Zero and negative limits (none) are kept.
++ */
++static int32_t
++sheng_memlimit_scaled(int32_t mb)
++{
++	static int scale = 0;
++	if (scale == 0) {
++		int value = 1;
++		if (!PE_parse_boot_argn("sheng-memlimit-scale", &value, sizeof(value)) || value < 1 || value > 16) {
++			value = 1;
++		}
++		scale = value;
++	}
++	return (mb > 0 && mb <= INT32_MAX / scale) ? mb * scale : mb;
++}
+ 
+ #define SET_ACTIVE_LIMITS_LOCKED(p, limit, is_fatal)                    \
+ MACRO_BEGIN                                                             \
+-(p)->p_memstat_memlimit_active = (limit);                               \
++(p)->p_memstat_memlimit_active = sheng_memlimit_scaled(limit);                               \
+    if (is_fatal) {                                                      \
+ 	   (p)->p_memstat_state |= P_MEMSTAT_MEMLIMIT_ACTIVE_FATAL;     \
+    } else {                                                             \
+@@ -193,7 +213,7 @@
+ 
+ #define SET_INACTIVE_LIMITS_LOCKED(p, limit, is_fatal)                  \
+ MACRO_BEGIN                                                             \
+-(p)->p_memstat_memlimit_inactive = (limit);                             \
++(p)->p_memstat_memlimit_inactive = sheng_memlimit_scaled(limit);                             \
+    if (is_fatal) {                                                      \
+ 	   (p)->p_memstat_state |= P_MEMSTAT_MEMLIMIT_INACTIVE_FATAL;   \
+    } else {                                                             \

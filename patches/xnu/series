@@ -9,6 +9,10 @@ zzye-board-cpu-idle.patch
 zzyf-board-amp.patch
 # T76: the board's classes registered under the kext lock (OSKextRegisterBoardClasses; T75f's boot deadlock).
 zzyg-board-class-registration.patch
+# Per-process memory limits scaled by sheng-memlimit-scale (iconservicesagent killed at its limit with the GPU addon loaded).
+zzyh-board-memlimit-scale.patch
+# F_SETPROTECTIONCLASS succeeds without effect on volumes without content protection (FrontBoard dropped every app snapshot).
+zzyi-board-noprotect-class.patch
 arch:../../../patches/xnu/zzzz-offline-owner-systemos-bringup.patch
 arch:../../../patches/xnu/zzzzz-video-console-physical-fb.patch
 arch:../../../patches/xnu/zzzzzz-video-console-text.patch

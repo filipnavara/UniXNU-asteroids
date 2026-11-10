@@ -22,7 +22,7 @@ from pathlib import Path
 
 BLOCK = 4096
 # board.toml [userdata]: the partition in 4096-byte LBAs.
-USERDATA_FIRST, USERDATA_LAST = 0x256248, 0x3a8bffa
+USERDATA_FIRST, USERDATA_LAST = 0x256248, 0x1cc0ffa   # 128 GB unit (256 GB: 0x3a8bffa)
 RESERVE_BLOCKS = 1024 * 256              # sheng-log-reserve default (1024 MiB)
 
 

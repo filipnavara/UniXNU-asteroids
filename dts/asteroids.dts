@@ -11,7 +11,7 @@
     // DarwinBoot places owned_memory_size (board.toml [payload.adt]) there; board.toml [payload] dram_size must equal the size.
     memory@8c0000000 {
         device_type = "memory";
-        reg = <0x8 0xc0000000 0x2 0x3fe00000>;
+        reg = <0x8 0xc0000000 0x1 0x3fe00000>;   // 8 GB unit (12 GB: 0x2 0x3fe00000)
     };
 };
 

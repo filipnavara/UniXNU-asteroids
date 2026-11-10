@@ -1,0 +1,61 @@
+--- a/bsd/kern/kern_descrip.c	2026-11-10 18:51:55
++++ b/bsd/kern/kern_descrip.c	2026-11-10 18:51:55
+@@ -2738,6 +2738,17 @@
+ 
+ outdrop:
+ 	return sys_fcntl_outdrop(p, fd, fp, vp, error);
++}
++
++/* Board (asteroids) diagnostics: the first 32 fcntl calls that end in EPERM, with their command, in the kernel log. */
++static void
++board_fcntl_note(proc_t p, int cmd, int error)
++{
++	static int noted = 0;
++	if (error == EPERM && noted < 32) {
++		noted++;
++		printf("BOARD fcntl EPERM cmd=%d pid=%d %s\n", cmd, proc_pid(p), p->p_comm);
++	}
+ }
+ 
+ int
+@@ -4349,6 +4360,18 @@
+ 			vnode_put(vp);
+ 			error = EBADF;
+ 			goto outdrop;
++		}
++
++		/*
++		 * Board (asteroids): the owner Data volume has no content protection keys. APFS refuses a class with EPERM, and
++		 * FrontBoard then drops every app snapshot it writes ("Failed to call fcntl on fd", "Error writing snapshot ... to
++		 * file"), which leaves the app switcher blank. On a volume without MNT_CPROTECT, and for APFS's EPERM, report success:
++		 * the file stays unprotected, exactly as the volume already makes it.
++		 */
++		if (!(vfs_flags(vnode_mount(vp)) & MNT_CPROTECT)) {
++			vnode_put(vp);
++			error = 0;
++			break;
+ 		}
+ 
+ 		struct vnode_attr va;
+@@ -4357,6 +4380,9 @@
+ 		VATTR_SET(&va, va_dataprotect_class, tmp);
+ 
+ 		error = VNOP_SETATTR(vp, &va, ctx);
++		if (error == EPERM) {
++			error = 0;
++		}
+ 
+ 		vnode_put(vp);
+ 		break;
+@@ -5293,9 +5319,11 @@
+ 	}
+ 
+ outdrop:
++	board_fcntl_note(p, cmd, error);
+ 	return sys_fcntl_outdrop(p, fd, fp, vp, error);
+ 
+ out:
++	board_fcntl_note(p, cmd, error);
+ 	return sys_fcntl_out(p, fd, fp, error);
+ }
+ 

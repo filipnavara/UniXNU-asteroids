@@ -68,6 +68,9 @@ static void bootArgument(const char *args, const char *name, char *out, size_t s
     out[n] = 0;
 }
 static void setTurnipDebug(bool renderServer) {
+    // The frontend's GPU log (GLOG: texture-log lines, surface refusals, bridge notes) prints only with SHENG_LOG_GPU set; set it in every
+    // process while /private/var/ngpu/debug/log-gpu exists on Data (no boot argument: the argument string is near its 1000-byte limit).
+    if (access("/private/var/ngpu/debug/log-gpu", F_OK) == 0) setenv("SHENG_LOG_GPU", "1", 0);
     char flags[128] = "nocb", timing[16] = {}, trace[16] = {}, light[8] = {}, extra[96] = {};
     if (FILE *file = fopen("/private/var/ngpu/tu_debug", "r")) {
         char line[128] = {};
