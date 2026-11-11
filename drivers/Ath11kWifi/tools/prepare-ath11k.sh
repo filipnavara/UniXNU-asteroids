@@ -13,9 +13,8 @@ rm -f $O/trace.h
   grep -ohE "trace_ath11k_[a-z_0-9]+" $A/*.c $A/*.h | sort -u | while read t; do
     case $t in *_enabled) echo "#define $t() 0";; *) echo "#define $t(...) ((void)0)";; esac; done
   echo '#endif'; } > $O/trace.h
-# The receive refill ring is the largest user of the DMA window (4096 buffers of 2 KiB): 1024 here, as Ath12kWifi's 512 for the WCN7850.
-rm -f $O/dp.h; sed -e 's/^#define DP_RXDMA_BUF_RING_SIZE\t\t4096/#define DP_RXDMA_BUF_RING_SIZE\t\t1024/' $A/dp.h > $O/dp.h
-grep -q 'DP_RXDMA_BUF_RING_SIZE.*1024' $O/dp.h || { echo "dp.h patch missed" >&2; exit 1; }
+# The receive refill ring keeps Linux's 4096 buffers: with 1024 (Ath12kWifi halves its WCN7850 ring to save DMA window) the WCN6750
+# firmware asserted in whalRecvDmaLeakRecovery right after the first scan; its per-MAC rings take 2048 each from this one.
 # Sending a command is the condition of the wait in ath11k_wmi_cmd_send: that wait must evaluate it once per round and never after it has succeeded.
 rm -f $O/wmi.c; sed '/^int ath11k_wmi_cmd_send(/,/^}/ s/wait_event_timeout(/wait_event_timeout_once(/' $A/wmi.c > $O/wmi.c
 grep -q 'wait_event_timeout_once' $O/wmi.c || { echo "wmi.c patch missed" >&2; exit 1; }
