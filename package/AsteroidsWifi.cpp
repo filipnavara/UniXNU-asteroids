@@ -1,0 +1,492 @@
+// SPDX-License-Identifier: BSD-2-Clause-Patent
+// asteroids: the WiFi module (drivers/Ath11kWifi, Linux ath11k on the WCN6750's hybrid bus) on the Nothing Phone (3a). The WCN6750's WLAN
+// firmware runs on the WPSS, which WpssProbe.cpp starts on the ADSP thread; this file runs the module on its own thread ("wifi") and gives it
+// what ath11k_ahb gets from Linux: the WPSS's IPC router link (QRTR packets both ways, queued between the two threads), the chip's 32
+// message interrupts (GIC SPIs 0x300-0x31f: the chip writes their numbers to 0x17110040), a DMA window the chip reaches through a
+// pass-through stream of the apps SMMU, register windows by physical address, firmware files, a clock and a log. sheng's WifiProbe.cpp
+// (UniXNU-sheng 516a780) is the model for the platform callbacks and the DMA window's allocator; the PCIe, MHI and PMIC parts have no
+// counterpart here.
+//
+// Devicetree facts (stock 3a devicetree, qcom,wcn6750 "icnss2"): reg msi_addr 0x17110040; interrupts SPI 0x300..0x31f rising edge;
+// iommus <&apps_smmu 0x1400 0x1>; dma-coherent; the WLAN SMP2P "wlan" out state (WpssProbe.cpp).
+//
+// wifi=5 runs it (with the WPSS of wifi>=2). wifi-irq=1 attaches the 32 interrupt lines (otherwise the module polls them). wifi-scan=0 skips the self-test scan the board otherwise asks for once the interface is up
+// (its networks go to the log). wifi-dma=MIB sizes the DMA window (default 48).
+#include <IOKit/IOLib.h>
+#include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
+#include <IOKit/IODeviceMemory.h>
+#include <IOKit/IORegistryEntry.h>
+#include <IOKit/IODeviceTreeSupport.h>
+#include <IOKit/IOService.h>
+#include <kern/thread.h>
+#include <sys/errno.h>
+#include <pexpert/pexpert.h>
+#include <stdarg.h>
+#include "nw_abi.h"
+#include "SmmuBypass.h"
+
+extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
+extern "C" int asteroids_wpss_qrtr_attach(void (*rx)(void *, const uint8_t *, uint32_t), void (*state)(void *, int), void *context);
+extern "C" int asteroids_wpss_qrtr_up(void);
+extern "C" int asteroids_wpss_qrtr_send(const void *packet, uint32_t length);
+extern "C" int asteroids_wpss_smp2p_wlan(uint32_t mask, uint32_t value);
+extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
+extern "C" volatile int32_t native_wpss_stats[16];
+extern "C" void _disable_preemption(void);
+extern "C" void _enable_preemption(void);
+
+// [0] stage (see Stage; negative: the step that failed), [1] last error, [2] interrupts, [3] vectors seen, [4] QRTR packets from the
+// WPSS, [5] to it, [6] DMA KiB used, [7] peak, [8] firmware files served | refused << 16, [9] SMMU result (bit per stream | error << 8),
+// [10] packets dropped (queue full), [11] scans asked, [12] networks in the last scan, [13] worker rounds / 1024, [14] the module's start
+// result, [15] DMA allocation failures
+extern "C" {volatile int32_t native_wlan_stats[16]; char native_wlan_bss[224];}
+// The module's log: a ring of lines on the heap (the kernel's __DATA is tight), read by the boot log.
+extern "C" {char *native_wlan_lines; volatile uint32_t native_wlan_lines_n;}
+
+namespace {
+enum Stage {StThread = 1, StWpss = 2, StSmmu = 3, StDma = 4, StIrqs = 5, StStarted = 6, StInterface = 7, StScanned = 8};
+constexpr uint64_t kSmmu = 0x15000000, kSmmuBytes = 0xd0000;
+constexpr uint16_t kStreams[2] = {0x1400, 0x1401};  // iommus <&apps_smmu 0x1400 0x1>: the mask covers both
+constexpr uint64_t kMsiAddr = 0x17110040;
+constexpr uint32_t kMsiSpi = 0x300, kMsiCount = 32;
+constexpr int kIrqBase = 1000;
+constexpr unsigned kLines = 256, kLineBytes = 112;
+constexpr unsigned kRxQueue = 64;
+
+void fail(int step, int error) {native_wlan_stats[1] = error; native_wlan_stats[0] = -step;}
+void stage(int value) {native_wlan_stats[0] = value;}
+uint64_t nowNs() {uint64_t ns = 0; absolutetime_to_nanoseconds(mach_absolute_time(), &ns); return ns;}
+
+// ---- log ----
+void pLog(int level, const char *line) {
+    if (!native_wlan_lines) return;
+    // the per-channel and per-frame debug lines would push the start-up out of the ring
+    static uint32_t recent[16];
+    uint32_t h = 2166136261u;
+    for (const char *c = line; *c; ++c) h = (h ^ static_cast<uint8_t>(*c)) * 16777619u;
+    h ^= static_cast<uint32_t>(level);
+    for (uint32_t r : recent) if (r == h) return;
+    memmove(&recent[1], &recent[0], sizeof recent - sizeof recent[0]);
+    recent[0] = h;
+    static uint64_t first;
+    const uint64_t now = nowNs() / 1000000;
+    if (!first) first = now;
+    const uint32_t i = __atomic_fetch_add(&native_wlan_lines_n, 1u, __ATOMIC_RELAXED) % kLines;
+    snprintf(native_wlan_lines + i * kLineBytes, kLineBytes, "%u %d %.100s", static_cast<uint32_t>(now - first), level, line);
+}
+void logf(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void logf(int level, const char *fmt, ...) {
+    char line[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    pLog(level, line);
+}
+
+// ---- the DMA window: one physically contiguous block, mapped uncached, handed out in pieces (sheng's allocator) ----
+constexpr unsigned kArenaBlocks = 16384;
+struct Arena {uint8_t *va; uint64_t pa; size_t bytes; struct Block {uint32_t off, size; bool used;} *blocks; unsigned count; size_t used, peak; unsigned failures;
+              IOBufferMemoryDescriptor *memory; IOMemoryMap *map;} gArena;
+bool arenaInit(size_t bytes) {
+    gArena.blocks = static_cast<Arena::Block *>(IOMallocData(kArenaBlocks * sizeof(Arena::Block)));
+    if (!gArena.blocks) return false;
+    gArena.memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous, bytes,
+                                                                     0x0000000ffffff000ull);
+    if (!gArena.memory || gArena.memory->prepare() != kIOReturnSuccess) return false;
+    gArena.pa = gArena.memory->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+    // A second, uncached mapping of the same pages: the chip's view and the CPU's then agree without cache maintenance.
+    IODeviceMemory *device = IODeviceMemory::withRange(gArena.pa, bytes);
+    gArena.map = device ? device->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (device) device->release();
+    if (!gArena.map) return false;
+    gArena.va = reinterpret_cast<uint8_t *>(gArena.map->getVirtualAddress());
+    gArena.bytes = bytes;
+    gArena.blocks[0] = {0, (uint32_t)bytes, false};
+    gArena.count = 1;
+    bzero(gArena.va, bytes);
+    return true;
+}
+void *arenaAlloc(size_t n, uint64_t *bus) {
+    n = (n + 63) & ~(size_t)63;
+    if (n >= 4096) n = (n + 4095) & ~(size_t)4095;
+    uint32_t align = 64;
+    if (n >= 4096) {align = 4096; while (align < n && align < (1u << 20)) align <<= 1;}
+    for (unsigned i = 0; i < gArena.count; ++i) {
+        Arena::Block &b = gArena.blocks[i];
+        if (b.used) continue;
+        const uint32_t start = (b.off + align - 1) & ~(align - 1), pad = start - b.off;
+        if (b.size < pad + n) continue;
+        const bool tail = b.size > pad + n;
+        const unsigned extra = (pad ? 1u : 0u) + (tail ? 1u : 0u);
+        if (gArena.count + extra > kArenaBlocks) continue;
+        const Arena::Block whole = b;
+        memmove(&gArena.blocks[i + extra], &gArena.blocks[i], (gArena.count - i) * sizeof(Arena::Block));
+        gArena.count += extra;
+        unsigned at = i;
+        if (pad) {gArena.blocks[at] = {whole.off, pad, false}; ++at;}
+        gArena.blocks[at] = {start, (uint32_t)n, true};
+        if (tail) gArena.blocks[at + 1] = {start + (uint32_t)n, whole.size - pad - (uint32_t)n, false};
+        uint8_t *p = gArena.va + start;
+        gArena.used += n;
+        if (gArena.used > gArena.peak) gArena.peak = gArena.used;
+        bzero(p, n);
+        if (bus) *bus = gArena.pa + start;
+        native_wlan_stats[6] = (int32_t)(gArena.used >> 10);
+        native_wlan_stats[7] = (int32_t)(gArena.peak >> 10);
+        return p;
+    }
+    native_wlan_stats[15] = (int32_t)++gArena.failures;
+    logf(3, "wifi: DMA window full: want %zu used %zu of %zu", n, gArena.used, gArena.bytes);
+    return nullptr;
+}
+void arenaFree(void *p) {
+    if (!p || (uint8_t *)p < gArena.va || (uint8_t *)p >= gArena.va + gArena.bytes) return;
+    const uint32_t off = (uint32_t)((uint8_t *)p - gArena.va);
+    for (unsigned i = 0; i < gArena.count; ++i) {
+        if (gArena.blocks[i].off != off || !gArena.blocks[i].used) continue;
+        gArena.used -= gArena.blocks[i].size;
+        gArena.blocks[i].used = false;
+        if (i + 1 < gArena.count && !gArena.blocks[i + 1].used) {
+            gArena.blocks[i].size += gArena.blocks[i + 1].size;
+            memmove(&gArena.blocks[i + 1], &gArena.blocks[i + 2], (gArena.count - i - 2) * sizeof(Arena::Block));
+            --gArena.count;
+        }
+        if (i > 0 && !gArena.blocks[i - 1].used) {
+            gArena.blocks[i - 1].size += gArena.blocks[i].size;
+            memmove(&gArena.blocks[i], &gArena.blocks[i + 1], (gArena.count - i - 1) * sizeof(Arena::Block));
+            --gArena.count;
+        }
+        native_wlan_stats[6] = (int32_t)(gArena.used >> 10);
+        return;
+    }
+}
+
+// ---- the SMMU: the WLAN streams in pass-through (the bypass bank the storage, touch and audio streams share) ----
+uint32_t smmuRd(void *ctx, unsigned o) {return *reinterpret_cast<volatile uint32_t *>(reinterpret_cast<uintptr_t>(ctx) + o);}
+void smmuWr(void *ctx, unsigned o, uint32_t v) {
+    *reinterpret_cast<volatile uint32_t *>(reinterpret_cast<uintptr_t>(ctx) + o) = v;
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+bool setupSmmu() {
+    IODeviceMemory *memory = IODeviceMemory::withRange(kSmmu, kSmmuBytes);
+    IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (memory) memory->release();
+    if (!map) return false;
+    struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
+    int32_t result = 0;
+    for (unsigned i = 0; i < 2; ++i) {
+        struct smmu_plan plan = smmu_plan_bypass(&io, kStreams[i], gArena.pa, gArena.bytes);
+        const char *e = plan.error ? plan.error : smmu_configure_bypass(&io, &plan, kStreams[i]);
+        if (!e) result |= 1 << i;
+        else logf(3, "wifi: SMMU stream %x: %s", kStreams[i], e);
+    }
+    native_wlan_stats[9] = result;
+    map->release();  // the routing stays; the registers are not needed again
+    return (result & 1) != 0;
+}
+
+// ---- interrupts: the chip's message interrupts are GIC SPIs, one per vector ----
+volatile uint32_t gPending, gWake;
+bool gIrqs;
+void wakeWorker() {__atomic_store_n(&gWake, 1u, __ATOMIC_RELEASE); thread_wakeup(event_t(&gWake));}
+void msiIrq(void *context) {
+    const uint32_t vector = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
+    __atomic_fetch_or(&gPending, 1u << vector, __ATOMIC_RELEASE);
+    native_wlan_stats[2] = native_wlan_stats[2] + 1;
+    native_wlan_stats[3] = native_wlan_stats[3] | (int32_t)(1u << vector);
+    wakeWorker();
+}
+int attachIrqs() {
+    if (!armcpu_spi_attach) return -78;
+    for (uint32_t v = 0; v < kMsiCount; ++v) {
+        int rc = 0;
+        for (unsigned tries = 0;; ++tries) {
+            rc = armcpu_spi_attach(32 + kMsiSpi + v, true, msiIrq, reinterpret_cast<void *>(uintptr_t(v)), nullptr, nullptr);
+            if (rc != kIOReturnNotReady || tries == 40) break;
+            IOSleep(250);
+        }
+        if (rc) return rc;
+    }
+    gIrqs = true;
+    return 0;
+}
+void waitWork(unsigned ms) {
+    if (__atomic_exchange_n(&gWake, 0u, __ATOMIC_ACQ_REL)) return;
+    assert_wait_timeout(event_t(&gWake), THREAD_UNINT, ms, NSEC_PER_MSEC);
+    if (__atomic_exchange_n(&gWake, 0u, __ATOMIC_ACQ_REL)) {clear_wait(current_thread(), THREAD_AWAKENED); return;}
+    thread_block(THREAD_CONTINUE_NULL);
+    __atomic_store_n(&gWake, 0u, __ATOMIC_RELEASE);
+}
+
+// ---- the router link: packets from the WPSS arrive on the ADSP thread and wait here for the worker ----
+struct RxPacket {uint8_t *data; uint32_t length;};
+RxPacket *gRx;
+unsigned gRxHead, gRxCount;
+IOLock *gRxLock;
+volatile int gLinkUp, gLinkDown;
+void linkRx(void *, const uint8_t *data, uint32_t length) {
+    uint8_t *copy = length ? static_cast<uint8_t *>(IOMallocData(length)) : nullptr;
+    if (!copy) {native_wlan_stats[10] = native_wlan_stats[10] + 1; return;}
+    memcpy(copy, data, length);
+    IOLockLock(gRxLock);
+    const bool room = gRxCount < kRxQueue;
+    if (room) {gRx[(gRxHead + gRxCount) % kRxQueue] = {copy, length}; gRxCount++;}
+    IOLockUnlock(gRxLock);
+    if (!room) {IOFreeData(copy, length); native_wlan_stats[10] = native_wlan_stats[10] + 1; return;}
+    native_wlan_stats[4] = native_wlan_stats[4] + 1;
+    wakeWorker();
+}
+void linkState(void *, int up) {
+    if (up) gLinkUp = 1; else gLinkDown = 1;
+    wakeWorker();
+}
+void drainRx() {
+    for (;;) {
+        IOLockLock(gRxLock);
+        if (!gRxCount) {IOLockUnlock(gRxLock); break;}
+        const RxPacket p = gRx[gRxHead];
+        gRxHead = (gRxHead + 1) % kRxQueue;
+        gRxCount--;
+        IOLockUnlock(gRxLock);
+        nw_wifi_qrtr_rx(p.data, p.length);
+        IOFreeData(p.data, p.length);
+    }
+    if (gLinkDown) {gLinkDown = 0; nw_wifi_qrtr_down();}
+}
+
+// ---- platform callbacks ----
+uint64_t pNowNs() {return nowNs();}
+uint64_t pBootNs() {uint64_t ns = 0; absolutetime_to_nanoseconds(mach_continuous_time(), &ns); return ns;}
+uint64_t pNow() {return nowNs() / 1000000;}
+void pSleep(unsigned ms) {IOSleep(ms);}
+void pBusyDelayUs(unsigned us) {IODelay(us);}
+void pPoll() {
+    nw_wifi_irq_mode(gIrqs);
+    const uint32_t pending = __atomic_exchange_n(&gPending, 0u, __ATOMIC_ACQ_REL);
+    if (pending) nw_wifi_irq_pending(pending);
+    drainRx();
+    nw_wifi_poll();
+}
+void pHalt() {for (;;) IOSleep(1000);}
+void *hAlloc(size_t n) {
+    uint8_t *p = static_cast<uint8_t *>(IOMallocData(n + 16));
+    if (!p) return nullptr;
+    *reinterpret_cast<size_t *>(p) = n + 16;
+    return p + 16;
+}
+void hFree(void *q) {
+    if (!q) return;
+    uint8_t *p = static_cast<uint8_t *>(q) - 16;
+    IOFreeData(p, *reinterpret_cast<size_t *>(p));
+}
+void *pDmaAlloc(size_t n, uint64_t *bus) {return arenaAlloc(n, bus);}
+void pDmaFree(size_t, void *p, uint64_t) {arenaFree(p);}
+uint64_t pDmaMap(void *p, size_t, int) {
+    if ((uint8_t *)p < gArena.va || (uint8_t *)p >= gArena.va + gArena.bytes) return 0;
+    return gArena.pa + ((uint8_t *)p - gArena.va);
+}
+void pDmaSync(uint64_t, size_t, int) {}
+
+// The radio's address when the firmware reports none: made from /chosen/unique-chip-id (sheng's boardMac), the same at every boot.
+bool boardMac(uint8_t m[6]) {
+    IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
+    OSData *id = chosen ? OSDynamicCast(OSData, chosen->getProperty("unique-chip-id")) : nullptr;
+    uint64_t seed = 0;
+    if (id && id->getLength() >= sizeof seed) memcpy(&seed, id->getBytesNoCopy(), sizeof seed);
+    OSSafeReleaseNULL(chosen);
+    if (!seed) return false;
+    uint64_t h = 0xcbf29ce484222325ull ^ 0x6750;
+    for (unsigned i = 0; i < 8; ++i) h = (h ^ ((seed >> (8 * i)) & 0xff)) * 0x100000001b3ull;
+    for (unsigned i = 0; i < 6; ++i) m[i] = (uint8_t)(h >> (8 * i));
+    m[0] = (uint8_t)((m[0] & 0xfe) | 0x02);
+    return true;
+}
+
+// Firmware files by name, each read once and kept for the boot. ath11k asks for board-2.bin, then board.bin, and regdb.bin; the 3a's
+// own board data is the vendor's ELF in the firmware partition (ath11k sends an ELF as such). wifi-bdf=PATH names the board data file in
+// the firmware partition; an owner-installed file below /private/var/firmware/ath11k/WCN6750/hw1.0 wins over both.
+struct FwCache {char name[24]; uint8_t *data; size_t size; bool tried;} gFw[8];
+int readVfs(const char *name, uint8_t **data, size_t *size);
+int pFwGet(const char *path, const uint8_t **data, size_t *size) {
+    const char *base = path;
+    for (const char *c = path; *c; ++c) if (*c == '/') base = c + 1;
+    if (!strcmp(base, "wlan_mac.bin")) {
+        static char text[40];
+        static size_t length;
+        uint8_t m[6];
+        if (!length && boardMac(m)) length = (size_t)snprintf(text, sizeof text, "address=%02x%02x%02x%02x%02x%02x\n", m[0], m[1], m[2], m[3], m[4], m[5]);
+        if (!length) return -1;
+        *data = reinterpret_cast<const uint8_t *>(text); *size = length;
+        return 0;
+    }
+    FwCache *slot = nullptr;
+    for (auto &f : gFw) if (f.tried && !strncmp(f.name, base, sizeof f.name)) {slot = &f; break;}
+    if (!slot) for (auto &f : gFw) if (!f.tried) {slot = &f; strlcpy(f.name, base, sizeof f.name); f.tried = true; break;}
+    if (!slot) return -1;
+    if (!slot->data) {
+        int error = readVfs(base, &slot->data, &slot->size);
+        if (error) {
+            char chosen[64] = "";
+            const char *candidates[4] = {nullptr, nullptr, nullptr, nullptr};
+            if (!strcmp(base, "board.bin")) {
+                if (PE_parse_boot_argn("wifi-bdf", chosen, sizeof chosen) && chosen[0]) candidates[0] = chosen;
+                else {candidates[0] = "image/qca6750/bdwlan.elf"; candidates[1] = "image/bdwlan.elf"; candidates[2] = "image/qca6750/bdwlan.bin";}
+            } else if (!strcmp(base, "regdb.bin")) {
+                candidates[0] = "image/qca6750/regdb.bin"; candidates[1] = "image/regdb.bin";
+            }
+            for (unsigned i = 0; error && candidates[i]; ++i) {
+                error = asteroids_modem_file(candidates[i], &slot->data, &slot->size);
+                if (!error) logf(6, "wifi: firmware %s from %s, %zu bytes", base, candidates[i], slot->size);
+            }
+        } else {
+            logf(6, "wifi: firmware %s from Data, %zu bytes", base, slot->size);
+        }
+        if (error) {native_wlan_stats[8] = native_wlan_stats[8] + (1 << 16); return -1;}
+    }
+    native_wlan_stats[8] = native_wlan_stats[8] + 1;
+    *data = slot->data; *size = slot->size;
+    return 0;
+}
+
+// ---- board callbacks of the hybrid bus ----
+void *pMapPhys(uint64_t pa, size_t n) {
+    IODeviceMemory *memory = IODeviceMemory::withRange(pa, n);
+    IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (memory) memory->release();
+    if (!map) {logf(3, "wifi: cannot map %llx + %zx", pa, n); return nullptr;}
+    logf(6, "wifi: register window %llx + %zx", pa, n);
+    return reinterpret_cast<void *>(map->getVirtualAddress());  // kept for the boot
+}
+int pQrtrSend(const void *packet, size_t len) {
+    const int rc = asteroids_wpss_qrtr_send(packet, (uint32_t)len);
+    if (!rc) native_wlan_stats[5] = native_wlan_stats[5] + 1;
+    return rc ? -EAGAIN : 0;
+}
+int pRprocUp(unsigned waitMs) {
+    for (unsigned waited = 0; !asteroids_wpss_qrtr_up(); waited += 50) {
+        if (waited >= waitMs) return 0;
+        IOSleep(50);
+    }
+    return 1;
+}
+int pSmp2pWlan(uint32_t mask, uint32_t value) {return asteroids_wpss_smp2p_wlan(mask, value);}
+
+// ---- the self-test scan: the networks the radio hears go to the log ----
+volatile int gScanDone;
+void scanDone() {gScanDone = 1; wakeWorker();}
+void logNetworks() {
+    const int count = nw_wifi_bss_count();
+    native_wlan_stats[12] = count;
+    native_wlan_bss[0] = 0;
+    struct nw_bss_info *bss = static_cast<struct nw_bss_info *>(IOMallocData(sizeof(struct nw_bss_info)));
+    if (!bss) return;
+    for (int i = 0; i < count; ++i) {
+        if (nw_wifi_bss_get(i, bss)) continue;
+        char ssid[33];
+        unsigned n = 0;
+        for (; n < bss->ssid_len && n < 32; ++n) ssid[n] = bss->ssid[n] >= 32 && bss->ssid[n] < 127 ? (char)bss->ssid[n] : '?';
+        ssid[n] = 0;
+        logf(6, "wifi: network %02x:%02x:%02x:%02x:%02x:%02x %u MHz %d dBm \"%s\"", bss->bssid[0], bss->bssid[1], bss->bssid[2],
+             bss->bssid[3], bss->bssid[4], bss->bssid[5], bss->freq_mhz, bss->signal_dbm, ssid);
+        char entry[48];
+        snprintf(entry, sizeof entry, "%s%s/%d", native_wlan_bss[0] ? " " : "", n ? ssid : "(hidden)", bss->signal_dbm);
+        strlcat(native_wlan_bss, entry, sizeof native_wlan_bss);
+    }
+    IOFreeData(bss, sizeof(struct nw_bss_info));
+}
+
+void wifiThread(void *, wait_result_t) {
+    thread_set_thread_name(current_thread(), "wifi");
+    stage(StThread);
+    // The WPSS comes up on the ADSP thread once the firmware partition is readable: wait for its "ready" (up to three minutes).
+    for (unsigned waited = 0; native_wpss_stats[0] < 7; waited += 250) {
+        if (native_wpss_stats[0] < 0 || waited >= 180000) {fail(StWpss, native_wpss_stats[0]); return;}
+        IOSleep(250);
+    }
+    gRxLock = IOLockAlloc();
+    gRx = static_cast<RxPacket *>(IOMallocData(sizeof(RxPacket) * kRxQueue));
+    if (!gRxLock || !gRx) {fail(StWpss, -12); return;}
+    const int attached = asteroids_wpss_qrtr_attach(linkRx, linkState, nullptr);
+    if (attached) {fail(StWpss, attached); return;}
+    stage(StWpss);
+    uint32_t dmaMiB = 48;
+    PE_parse_boot_argn("wifi-dma", &dmaMiB, sizeof dmaMiB);
+    if (dmaMiB < 8 || dmaMiB > 256) dmaMiB = 48;
+    if (!arenaInit((size_t)dmaMiB << 20)) {fail(StDma, -12); return;}
+    logf(6, "wifi: DMA window %llx + %u MiB, uncached", gArena.pa, dmaMiB);
+    if (!setupSmmu()) {fail(StSmmu, native_wlan_stats[9]); return;}
+    stage(StSmmu);
+    stage(StDma);
+    // ArmCpu keeps 24 SPI handlers for every driver, fewer than the chip's 32 vectors: the module polls its interrupt lines every
+    // millisecond unless wifi-irq=1 attaches them all (and falls back to polling when they do not fit).
+    unsigned wantIrqs = 0;
+    PE_parse_boot_argn("wifi-irq", &wantIrqs, sizeof wantIrqs);
+    const int irqs = wantIrqs ? attachIrqs() : -1;
+    if (irqs) logf(6, "wifi: interrupts %s (%d): polling", wantIrqs ? "not attached" : "not asked for", irqs);
+    stage(StIrqs);
+
+    static const struct lx_platform plat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync, pFwGet,
+                                            pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption};
+    nw_wifi_set_platform(&plat);
+    static struct nw_board board;
+    board.irq_base = kIrqBase;
+    board.map_phys = pMapPhys;
+    board.msi_addr = kMsiAddr;
+    board.msi_spi_first = kMsiSpi;
+    board.msi_count = kMsiCount;
+    board.qrtr_send = pQrtrSend;
+    board.rproc_up = pRprocUp;
+    board.smp2p_wlan = pSmp2pWlan;
+    static const struct nw_wifi_events events = {scanDone, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    nw_wifi_set_events(&events);
+    const int r = nw_wifi_start(&plat, &board);
+    native_wlan_stats[14] = r;
+    if (r) {fail(StStarted, r); return;}
+    stage(StStarted);
+    nw_wifi_irq_mode(gIrqs);
+
+    unsigned selfScan = 1;
+    PE_parse_boot_argn("wifi-scan", &selfScan, sizeof selfScan);
+    bool powered = false, scanAsked = false;
+    uint64_t scanAt = 0;
+    for (uint64_t n = 0;; ++n) {
+        const int busy = nw_wifi_step();
+        if (!powered && nw_wifi_stats.stage >= 4) {
+            powered = true;
+            stage(StInterface);
+            nw_wifi_power(1);
+            scanAt = pNow() + 2000;
+        }
+        if (powered && selfScan && !scanAsked && pNow() >= scanAt) {
+            scanAsked = true;
+            const int s = nw_wifi_scan(nullptr, 0);
+            native_wlan_stats[11] = native_wlan_stats[11] + 1;
+            if (s) logf(3, "wifi: scan refused: %d", s);
+        }
+        if (gScanDone) {gScanDone = 0; logNetworks(); stage(StScanned);}
+        if (!busy) {
+            const unsigned wait = nw_wifi_wait_ms(gIrqs ? 1000 : 1);
+            if (wait) waitWork(wait);
+        }
+        if ((n & 1023) == 0) native_wlan_stats[13] = (int32_t)(n >> 10);
+    }
+}
+}  // namespace
+
+// The firmware files an owner may install on the Data volume (VFS; AsteroidsWifiFiles.c, built with the BSD flags).
+extern "C" int asteroids_wifi_vfs_read(const char *name, uint8_t **data, size_t *size);
+namespace {
+int readVfs(const char *name, uint8_t **data, size_t *size) {return asteroids_wifi_vfs_read(name, data, size);}
+}
+
+extern "C" void asteroids_wifi_probe(void) {
+    unsigned mode = 0;
+    if (!PE_parse_boot_argn("wifi", &mode, sizeof mode) || mode < 5 || native_wlan_stats[0]) return;
+    native_wlan_lines = static_cast<char *>(IOMallocData(kLines * kLineBytes));
+    if (native_wlan_lines) bzero(native_wlan_lines, kLines * kLineBytes);
+    thread_t thread = nullptr;
+    if (kernel_thread_start(wifiThread, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);
+    else fail(StThread, -7);
+}

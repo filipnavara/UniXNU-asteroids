@@ -41,6 +41,7 @@ void sheng_qrtr_start(void);
 int sheng_fw_read(void *handle, uint64_t offset, void *to, size_t length);
 void sheng_fw_close(void *handle);
 }
+#include "AsteroidsRemote.h"
 
 extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
 // [0] stage (see Stage; negative: the step that failed), [1] last error, [2] IPCC interrupts, [3] the DSP's slave-kernel bits (-1 no
@@ -62,7 +63,7 @@ constexpr uint32_t kPasAdsp = 1, kPasDtb = 36, kRemotePid = 2, kItemIn = 443, kI
 constexpr uint32_t kItemGlinkDesc = 478, kItemGlinkTx = 479, kItemGlinkRx = 480, kGlinkFifo = 0x4000;
 constexpr uint32_t kSpiIpcc = 229, kSpiRsc = 5;
 constexpr uint32_t kFatal = 1u << 0, kReady = 1u << 1, kHandover = 1u << 2;
-constexpr uint32_t kEvSmp2p = 1, kEvGlink = 2, kEvAop = 4, kEvRsc = 8, kEvSend = 16;
+constexpr uint32_t kEvSmp2p = 1, kEvGlink = 2, kEvAop = 4, kEvRsc = 8, kEvSend = 16, kEvWpss = 32;  // kEvWpss: a WPSS doorbell or send
 constexpr unsigned kClients = 4, kQueue = 8;
 
 struct Window {IOMemoryMap *map; volatile uint8_t *va;};
@@ -132,6 +133,7 @@ void ipccIrq(void *) {
         if (id == qcom_ipcc_id(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_SMP2P)) bits |= kEvSmp2p;
         else if (id == qcom_ipcc_id(QCOM_IPCC_CLIENT_LPASS, QCOM_IPCC_SIGNAL_GLINK_QMP)) bits |= kEvGlink;
         else if (id == qcom_ipcc_id(QCOM_IPCC_CLIENT_AOP, QCOM_IPCC_SIGNAL_GLINK_QMP)) bits |= kEvAop;
+        else if ((id >> 16) == asteroids_remote::kIpccWpss) bits |= kEvWpss;  // asteroids: the WPSS (WpssProbe.cpp) shares this line
     }
     native_adsp_stats[2] = native_adsp_stats[2] + 1;
     if (bits) wake(bits);
@@ -239,17 +241,30 @@ bool readCmdDb(uint8_t *copy) {
 }
 QcomRpmhResource gLcx, gLmx;
 int gTcs = -1;
+// The command DB copy (128 KiB): allocated once and kept, not static, so the kernel's __DATA fits the iPadOS 27 fileset (the prelinker
+// places it before the first retained kext's data). Read once by the DSP bring-up; the WPSS bring-up looks up its rails in it too.
+uint8_t *gDb;
+bool gDbRead;
 
 // Votes both rails to the given ARC index pair through active TCS 1 and waits up to 100 ms for its done interrupt. The active TCSs are 0
 // to 2 (tcs-config lists the active type first); the WiFi bring-up sends through TCS 0, so the two never share one. A request whose done
 // interrupt is not seen still counts (bit 15 of [15]): the WiFi rails show such requests take effect.
+int voteResources(const QcomRpmhResource &a, const QcomRpmhResource &b, uint32_t va, uint32_t vb, bool *seen);
 int vote(uint32_t lcx, uint32_t lmx) {
+    bool done = false;
+    const int rc = voteResources(gLcx, gLmx, lcx, lmx, &done);
+    if (rc) return rc;
+    native_adsp_stats[15] = (native_adsp_stats[15] & ~0xffff) | (int32_t)(lcx | lmx << 8 | (done ? 0 : 1u << 15));
+    return 0;
+}
+// asteroids: one active request for two ARC resources through the DSP's TCS (the WPSS bring-up votes cx and mx the same way).
+int voteResources(const QcomRpmhResource &ra, const QcomRpmhResource &rb, uint32_t va, uint32_t vb, bool *seen) {
     if (gTcs < 0) {
         gTcs = 1;
         gRscIrqBits = 1u << gTcs;
         wr(gRsc, kRscTcs + 0, rd(gRsc, kRscTcs + 0) | gRscIrqBits);  // IRQ_ENABLE for our TCS
     }
-    const uint32_t addresses[2] = {gLcx.address, gLmx.address}, values[2] = {lcx, lmx};
+    const uint32_t addresses[2] = {ra.address, rb.address}, values[2] = {va, vb};
     QcomRpmhWrite writes[16];
     const unsigned n = qcom_rpmh_active_request(&gLayout, (unsigned)gTcs, addresses, values, 2, writes, 16);
     if (!n) return -22;
@@ -262,7 +277,7 @@ int vote(uint32_t lcx, uint32_t lmx) {
     if (!done && (rd(gRsc, kRscTcs + gLayout.irq_status) & gRscIrqBits)) done = true;  // one look in case the line is not ours
     const unsigned m = qcom_rpmh_finish(&gLayout, (unsigned)gTcs, writes, 16);
     for (unsigned i = 0; i < m; ++i) wr(gRsc, kRscTcs + writes[i].offset, writes[i].value);
-    native_adsp_stats[15] = (native_adsp_stats[15] & ~0xffff) | (int32_t)(lcx | lmx << 8 | (done ? 0 : 1u << 15));
+    if (seen) *seen = done;
     return 0;
 }
 
@@ -404,6 +419,7 @@ void serviceGlink() {
 }
 void service(uint32_t bits) {
     if (bits & kEvAop) qcom_qmp_step(&gQmp);
+    if (bits & (kEvWpss | kEvSend)) asteroids_wpss_service();
     if (bits & (kEvSmp2p | kEvGlink)) serviceSmp2p();
     if (bits & (kEvGlink | kEvSend)) {applyClients(); serviceGlink();}
 }
@@ -566,13 +582,11 @@ bool start() {
     }
     stage(StLoadState);
 
-    // The command DB copy (128 KiB): allocated once and kept, not static, so the kernel's __DATA fits the iPadOS 27 fileset
-    // (the prelinker places it before the first retained kext's data).
-    static uint8_t *db;
-    if (!db) db = static_cast<uint8_t *>(IOMallocData(kCmdDbSize));
-    if (!db) {fail(StRails, -12); release(dtb); release(adsp); return false;}
+    if (!gDb) gDb = static_cast<uint8_t *>(IOMallocData(kCmdDbSize));
+    if (!gDb) {fail(StRails, -12); release(dtb); release(adsp); return false;}
+    uint8_t *db = gDb;
     uint32_t lcx = 0, lmx = 0;
-    if (!readCmdDb(db) || qcom_cmd_db_find(db, kCmdDbSize, "lcx.lvl", &gLcx) || qcom_cmd_db_find(db, kCmdDbSize, "lmx.lvl", &gLmx) ||
+    if (!(gDbRead = gDbRead || readCmdDb(db)) || qcom_cmd_db_find(db, kCmdDbSize, "lcx.lvl", &gLcx) || qcom_cmd_db_find(db, kCmdDbSize, "lmx.lvl", &gLmx) ||
         qcom_rpmh_level_index(&gLcx, 0xffffffffu, &lcx) || qcom_rpmh_level_index(&gLmx, 0xffffffffu, &lmx)) {
         fail(StRails, -2); release(dtb); release(adsp); return false;
     }
@@ -642,15 +656,71 @@ void adspThread(void *, wait_result_t) {
     survey();
     stage(StSurveyed);
     if (mode < 2 || !start() || !startGlink()) return;
+    asteroids_wpss_run();  // asteroids: the WiFi processor, with wifi=2 or more (WpssProbe.cpp); returns at once without it
     // From here on the thread only answers doorbells and client sends; with nothing pending it sleeps without a deadline, except while
     // a send waits for an intent or FIFO room (then it looks again every second).
     for (;;) {
         bool pending = false;
         for (unsigned i = 0; i < gClientCount; ++i) pending |= gClients[i].count != 0;
+        pending |= asteroids_wpss_pending() != 0;
         service(waitEvents(pending ? 1000 : 3600u * 1000u) | (pending ? kEvSend : 0));
     }
 }
 }  // namespace
+
+// ---- asteroids: what the WPSS bring-up (WpssProbe.cpp) uses of this thread's machinery; called on this thread only ----
+namespace asteroids_remote {
+void ring(uint32_t client, uint32_t signal) {::ring(client, signal);}
+void enableDoorbell(uint32_t client, uint32_t signal) {wr(gIpcc, QCOM_IPCC_RECV_ENABLE, qcom_ipcc_id(client, signal));}
+bool waitUntil(uint32_t ms, bool (*done)(void *), void *context) {return ::waitUntil(ms, [&] {return done(context);});}
+const QcomSmem &smem() {return gSmem;}
+int allocItem(const QcomSmemPartition &part, uint16_t id, uint32_t size) {
+    if (!lockSmem()) return -16;
+    const int rc = qcom_smem_alloc(&gSmem, &part, id, size);
+    unlockSmem();
+    return rc == QcomSmemExists ? 0 : rc;
+}
+volatile uint8_t *item(const QcomSmemPartition &part, uint16_t id, uint32_t *size) {
+    uint32_t at = 0, bytes = 0;
+    if (qcom_smem_find(&gSmem, &part, id, &at, &bytes)) return nullptr;
+    if (size) *size = bytes;
+    return gSmemW.va + at;
+}
+int qmp(const char *message) {
+    if (gQmp.state != QcomQmpOpen) return -19;
+    const int rc = qcom_qmp_send(&gQmp, message);
+    if (rc < 0) return rc;
+    if (!::waitUntil(1000, [] {return qcom_qmp_step(&gQmp) == QcomQmpOpen;})) {qcom_qmp_abandon(&gQmp); return -60;}
+    return 0;
+}
+int voteRails(const char *a, const char *b, uint32_t level_a, uint32_t level_b) {
+    QcomRpmhResource ra, rb;
+    uint32_t ia = 0, ib = 0;
+    if (!gDb || !gDbRead) return -19;
+    if (qcom_cmd_db_find(gDb, kCmdDbSize, a, &ra) || qcom_cmd_db_find(gDb, kCmdDbSize, b, &rb)) return -2;
+    if (qcom_rpmh_level_index(&ra, level_a, &ia) || qcom_rpmh_level_index(&rb, level_b, &ib)) return -22;
+    return voteResources(ra, rb, ia, ib, nullptr);
+}
+int pasBoot(const char *path, uint32_t pas, uint64_t base, uint64_t size, int32_t *kib, int32_t *scm_x0) {
+    static Image image;  // a few KiB of header table: static, as the DSP's two
+    bzero(&image, sizeof image);
+    int rc = sheng_fw_open(path, &image.file, &image.size);
+    if (rc) {image.file = nullptr; return -1;}
+    if (kib) *kib = (int32_t)(image.size >> 10);
+    if (qcom_mdt_parse(&image.mdt, image.size, fileRead, image.file)) {release(image); return -2;}
+    rc = authenticateHeader(image, pas, base);
+    if (scm_x0) *scm_x0 = native_adsp_stats[13];
+    if (rc) {release(image); return rc == -1 || rc == -12 || rc == -5 ? -3 : -4;}
+    if (loadSegments(image, base, size)) {pasShutdown(pas); release(image); return -5;}
+    const ScmResult r = scm(QCOM_SCM_PAS_AUTH_AND_RESET, qcom_scm_args(1, 0, 0, 0), pas, 0, 0);
+    if (scm_x0) *scm_x0 = (int32_t)r.x0;
+    release(image);  // the metadata may go once the image is authenticated
+    if (!scmOk(r)) {pasShutdown(pas); return -6;}
+    return 0;
+}
+void pasShutdown(uint32_t pas) {scm(QCOM_SCM_PAS_SHUTDOWN, qcom_scm_args(1, 0, 0, 0), pas, 0, 0);}
+void wakeWpss() {wake(kEvWpss);}
+}  // namespace asteroids_remote
 
 extern "C" ShengAdspChannel *sheng_adsp_channel(const char *name, uint32_t intent_size, uint32_t intent_count, int initiator,
                                                 const ShengAdspClient *client, void *context) {

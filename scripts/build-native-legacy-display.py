@@ -255,6 +255,9 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func','--globalize-
 adsp_source=ROOT/'kits/asteroids/AdspProbe.cpp'
 adsp_obj=OUT/'AdspProbe.o'
 run([str(adsp_source) if str(arg)==str(source) else str(adsp_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd],cwd=r['directory'])
+wpss_source=ROOT/'kits/asteroids/WpssProbe.cpp'
+wpss_obj=OUT/'WpssProbe.o'
+run([str(wpss_source) if str(arg)==str(source) else str(wpss_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd],cwd=r['directory'])
 battery_source=ROOT/'kits/asteroids/BatteryProbe.cpp'
 battery_obj=OUT/'BatteryProbe.o'
 run([str(battery_source) if str(arg)==str(source) else str(battery_obj) if str(arg)==str(OUT/'LegacyDisplayProbe.o') else arg for arg in cmd],cwd=r['directory'])
@@ -408,10 +411,10 @@ run([llvm/'llvm-objcopy','--remove-section=__DATA,__mod_init_func',
      keyevents/'NativeKeyStoreEvents.o',keyevents_late])
 require(code((keyevents/'NativeKeyStoreEvents.o').read_bytes(),macho((keyevents/'NativeKeyStoreEvents.o').read_bytes()))==
         code(keyevents_late.read_bytes(),macho(keyevents_late.read_bytes())),'Owned event-service instructions unchanged by late init staging')
-run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,cpufreq_obj,buttons_obj,panel_obj,backlight_late,adsp_obj,battery_obj,battery_class_late,audio_obj,audio_class_late,keystore_obj,
+run(['xcrun','ar','rcs',archive,late,OUT/'original-bindings.o',OUT/'LegacyDisplayProbe.o',hid_obj,cpufreq_obj,buttons_obj,panel_obj,backlight_late,adsp_obj,wpss_obj,battery_obj,battery_class_late,audio_obj,audio_class_late,keystore_obj,
      hid_dir/'NativeHidInput.late.o',hid_dir/'hid-original-bindings.o',keyevents_late,stub_obj,touch_state_obj,touch_probe_obj,*touch_kit_objs,gpupower_obj,*gmu_objs])
 sources=[ROOT/'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
-         ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',source,hid_source,cpufreq_source,buttons_source,panel_source,backlight_source,adsp_source,battery_source,battery_class_source,*adsp_kit_sources,audio_source,audio_class_source,*audio_kit_sources,
+         ROOT/'drivers/GopFramebuffer/NativeLegacyRequest.h',source,hid_source,cpufreq_source,buttons_source,panel_source,backlight_source,adsp_source,wpss_source,battery_source,battery_class_source,*adsp_kit_sources,audio_source,audio_class_source,*audio_kit_sources,
          *[ROOT/'kits/asteroids'/h for h in ('ShengGpr.h','ShengAudioReach.h','GeniI2c.h','AsteroidsTfa9873.h','ShengAudioAbi.h')],tfa_gen/'AsteroidsTfaConfig.h',ROOT/'kits/asteroids/BootResetCore.h',keystore_source,
          ROOT/'drivers/ShengHidInput/NativeHidInput.cpp',ROOT/'scripts/build-sheng-hid-input.py',
          ROOT/'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp',stub_source,touch_state_source,touch_probe_source,*touch_kit_sources,ROOT/'kits/asteroids/QcomRpmh.h',

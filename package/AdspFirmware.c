@@ -180,3 +180,31 @@ void sheng_fw_close(void *handle)
     if (fw->vnode) vnode_close(fw->vnode, FREAD, vfs_context_kernel());
     IOFreeType(fw, struct sheng_fw);
 }
+
+// asteroids: a whole file of the firmware partition (image/..., read in place), for the WiFi module's board data. *data is IOMallocData'd
+// (the caller keeps it for the boot). ENOENT when absent, ENXIO while the UFS driver is not up.
+int asteroids_modem_file(const char *path, uint8_t **data, size_t *size)
+{
+    *data = NULL; *size = 0;
+    int rc = mountPartition();
+    if (rc) return rc;
+    FatFile file;
+    rc = fat_open(gVolume, path, &file);
+    if (rc == FatNotFound) return ENOENT;
+    if (rc) return EIO;
+    if (file.directory || !file.size || file.size > 16u * 1024 * 1024) return EFTYPE;
+    uint8_t *bytes = IOMallocData(file.size);
+    if (!bytes) return ENOMEM;
+    if (fat_read(gVolume, &file, 0, bytes, file.size)) {IOFreeData(bytes, file.size); return EIO;}
+    *data = bytes; *size = file.size;
+    return 0;
+}
+
+// asteroids: the short names in a directory of the firmware partition (for the log); 0 or an errno.
+int asteroids_modem_list(const char *path, char *out, size_t cap)
+{
+    int rc = mountPartition();
+    if (rc) return rc;
+    rc = fat_list(gVolume, path, out, cap);
+    return rc == FatNotFound ? ENOENT : rc ? EIO : 0;
+}

@@ -744,6 +744,7 @@ extern "C" void sheng_adsp_probe(void);
 extern "C" void sheng_battery_probe(void);
 extern "C" void sheng_audio_probe(void);
 extern "C" void asteroids_touch_probe(void);
+extern "C" void asteroids_wifi_probe(void);
 void native_legacy_display_late_probe(void) {
     boot_late_probe_thread=IOThreadSelf();
     native_late_probe_step=1;native_keystore_probe();
@@ -755,6 +756,7 @@ void native_legacy_display_late_probe(void) {
     native_late_probe_step=7;sheng_adsp_probe();        // asteroids T38: the audio DSP (package/AdspProbe.cpp); nothing without sheng-adsp
     native_late_probe_step=8;sheng_battery_probe();     // asteroids T38: battery and charger from the DSP (package/BatteryProbe.cpp); nothing without sheng-battery
     native_late_probe_step=9;sheng_audio_probe();       // asteroids T41: speakers (package/AsteroidsAudioProbe.cpp); nothing without sheng-audio
+    native_late_probe_step=16;asteroids_wifi_probe();   // asteroids: the WiFi module on the WPSS (package/AsteroidsWifi.cpp); nothing without wifi=5
     native_late_probe_step=10;native_hid_input_probe();
     native_late_probe_step=11;
     IOService *display=pendingLegacyDisplay;if(!display){native_late_probe_step=14;return;}pendingLegacyDisplay=nullptr;

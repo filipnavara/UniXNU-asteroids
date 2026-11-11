@@ -544,7 +544,7 @@ for header in ('ShengGmuVotesSource.h', 'ShengGmuCommandDbSource.h', 'ShengGmuSo
                'ShengZapFirmware.h'):
     require((gmu_gen / header).is_file(), 'build/sheng-gmu/' + header + ' is missing; run prepare-asteroids-gmu-votes.py and prepare-asteroids-gmu.py first')
 vote_flags = ('-I', str(KITS), '-I', str(soc_kit), '-I', str(hfi_kit), '-I', str(gmu_gen))
-for stem, extra in [('CpuFreqProbe', ()), ('PanelProbe', ()), ('AdspProbe', ()), ('BatteryProbe', ()), ('ButtonProbe', ()), ('TouchState', ()),
+for stem, extra in [('CpuFreqProbe', ()), ('PanelProbe', ()), ('AdspProbe', ()), ('WpssProbe', ()), ('BatteryProbe', ()), ('ButtonProbe', ()), ('TouchState', ()),
                     ('AsteroidsAudioProbe', ('-I', str(KITS), '-I', str(tfa_gen))),
                     ('AsteroidsTouchProbe', ('-I', str(geni), '-I', str(KITS))),
                     ('GpuPowerProbe', adreno_flags + vote_flags)]:
@@ -577,6 +577,20 @@ for sources_, extra, tag in ((smmu_sources, ('-I', str(smmu4k), '-I', str(pm4)),
         dst = board_dir / f'{src.stem}.{tag}.o'
         compile_c(src, dst, extra=extra)
         board_objects.append(dst)
+# asteroids: the WiFi module (drivers/Ath11kWifi: ath11k on the WCN6750's hybrid bus) and the board's worker for it (AsteroidsWifi.cpp, wifi=5),
+# with its Data firmware reader (VFS, BSD flags). ATH11K_WIFI_DIR names another checkout of the module.
+WIFI = Path(os.environ.get('ATH11K_WIFI_DIR') or KITS.resolve().parent / 'drivers/Ath11kWifi')
+require((WIFI / 'include/nw_abi.h').is_file(), f'{WIFI}: the Ath11kWifi module is missing')
+compile_cpp(KITS / 'AsteroidsWifi.cpp', board_dir / 'AsteroidsWifi.o', ('-I', str(WIFI / 'include'), '-I', str(KITS)))
+board_objects.append(board_dir / 'AsteroidsWifi.o')
+compile_c(KITS / 'AsteroidsWifiFiles.c', board_dir / 'AsteroidsWifiFiles.bsd.o', recipe='bsd/DEVELOPMENT/kern_exec.o.json')
+board_objects.append(board_dir / 'AsteroidsWifiFiles.bsd.o')
+wifi_build = subprocess.check_output(['python3', str(ROOT / 'scripts/build-ath11k-wifi.py'), str(WIFI), str(board_dir / 'ath11k-wifi')],
+                                     timeout=3600, text=True)
+wifi_objects = [Path(line.split(' ', 1)[1]) for line in wifi_build.splitlines() if line.startswith('OBJ ')]
+require(wifi_objects, 'build-ath11k-wifi.py built no objects')
+board_objects += wifi_objects
+print(f'WiFi module: {len(wifi_objects)} objects')
 # The audio DSP firmware reader (sheng_fw_*, which AdspProbe uses): a VFS reader, so with kern_exec's BSD flags, as iPadOS 17's
 # boot progress kit builds it (build-boot-progress.py).
 compile_c(KITS / 'AdspFirmware.c', board_dir / 'AdspFirmware.bsd.o', recipe='bsd/DEVELOPMENT/kern_exec.o.json',
@@ -594,7 +608,8 @@ sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp', ROOT / 'driv
            ROOT / 'drivers/GopFramebuffer/NativeGOPPresenter.cpp', ROOT / 'drivers/GopFramebuffer/NativeGOPWire.h',
            ROOT / 'drivers/GopFramebuffer/NativeHalfCodes.h', source, ABI_PATH, HID_ABI_PATH, keystore_source,
            ROOT / 'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp', hid_source, hid_probe, *gmu_sources, *smmu_sources, *vote_sources,
-           *kit_sources, *[KITS / (stem + '.cpp') for stem in ('CpuFreqProbe', 'PanelProbe', 'AdspProbe', 'BatteryProbe', 'ButtonProbe',
+           KITS / 'AsteroidsWifi.cpp', KITS / 'AsteroidsWifiFiles.c',
+           *kit_sources, *[KITS / (stem + '.cpp') for stem in ('CpuFreqProbe', 'PanelProbe', 'AdspProbe', 'WpssProbe', 'BatteryProbe', 'ButtonProbe',
                                                                'TouchState', 'AsteroidsAudioProbe', 'AsteroidsTouchProbe', 'GpuPowerProbe',
                                                                'AsteroidsBacklight', 'ShengAudioService', 'ShengBattery')],
            KITS / 'LegacyDisplayStubs.c', KITS / 'GpuPowerBoard.h', tfa_gen / 'AsteroidsTfaConfig.h']

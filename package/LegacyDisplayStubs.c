@@ -185,3 +185,8 @@ boot_progress_caller_stack (uint64_t *out, unsigned limit, uint64_t *slide)
     *slide = 0;
   return 0;
 }
+
+/* The WiFi worker (AsteroidsWifi.cpp) is built on iOS 27 only; iPadOS 17's late probe calls this instead. */
+#if !defined(__arm64e__)
+__attribute__((weak)) void asteroids_wifi_probe (void) {}
+#endif

@@ -46,6 +46,8 @@ int fat_mount(FatVolume *v, uint64_t size, FatRead read, void *context);
 /* path: names separated by '/', each matched in any case against the long name, else the 8.3 name ("image/adsp.b00"). */
 int fat_open(FatVolume *v, const char *path, FatFile *file);
 int fat_read(FatVolume *v, const FatFile *file, uint64_t offset, void *to, size_t length);
+/* asteroids: the short names in a directory, space separated (directories end in '/'), as many as fit in out. */
+int fat_list(FatVolume *v, const char *path, char *out, size_t cap);
 
 #ifdef __cplusplus
 }

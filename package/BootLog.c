@@ -160,6 +160,14 @@ extern volatile int32_t native_qrtr_stats[16] __attribute__((weak_import));
 extern volatile int32_t native_battery_raw[10] __attribute__((weak_import));
 extern volatile int32_t native_charger_stats[16] __attribute__((weak_import));
 extern char native_qrtr_text[96] __attribute__((weak_import));
+extern volatile int32_t native_wpss_stats[16] __attribute__((weak_import));
+extern char native_wpss_text[96] __attribute__((weak_import));
+extern char native_wpss_services[160] __attribute__((weak_import));
+extern char native_wpss_files[256] __attribute__((weak_import));
+extern volatile int32_t native_wlan_stats[16] __attribute__((weak_import));
+extern char native_wlan_bss[224] __attribute__((weak_import));
+extern char *native_wlan_lines __attribute__((weak_import));
+extern volatile uint32_t native_wlan_lines_n __attribute__((weak_import));
 extern volatile uint32_t native_swipe_stats[16] __attribute__((weak_import));
 extern volatile int32_t native_touch_extent[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_method_stats[20][4] __attribute__((weak_import));
@@ -1206,6 +1214,62 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     if (&native_qrtr_text && native_qrtr_text[0]) {
       snprintf(row, sizeof row, "[qrtr] %.95s", native_qrtr_text);
       at = put(out, at, cap, row, sizeof row);
+    }
+  }
+  // asteroids: the WiFi processor (WpssProbe.cpp, wifi=1 survey, 2 start): stage and error, doorbells, the WPSS's slave-kernel bits, SMEM
+  // items, image KiB, ms to ready, GLINK messages in/out, IPCRTR state, last SCM x0, QRTR packets in, the WPSS's node, services, the WLFW
+  // instance, WLAN SMP2P bits; then its note and the services it announced (service:instance, hex).
+  if (&native_wpss_stats && native_wpss_stats[0]) {
+    char row[200];
+    snprintf(row, sizeof row, "[wpss] st=%d err=%d irq=%d slave=%x items=%x fw=%dK rdy=%dms rx=%d tx=%d ch=%x scm=%d qrtr=%d node=%d svcs=%d wlfw=%x wlan=%x",
+             native_wpss_stats[0], native_wpss_stats[1], native_wpss_stats[2], native_wpss_stats[3], native_wpss_stats[4], native_wpss_stats[5],
+             native_wpss_stats[6], native_wpss_stats[7], native_wpss_stats[8], native_wpss_stats[9], native_wpss_stats[10], native_wpss_stats[11],
+             native_wpss_stats[12], native_wpss_stats[13], native_wpss_stats[14], native_wpss_stats[15]);
+    at = put(out, at, cap, row, sizeof row);
+    if (&native_wpss_text && native_wpss_text[0]) {
+      snprintf(row, sizeof row, "[wpss] %.95s", native_wpss_text);
+      at = put(out, at, cap, row, sizeof row);
+    }
+    if (&native_wpss_files && native_wpss_files[0]) {
+      char files[280];
+      snprintf(files, sizeof files, "[wpss] files %.255s", native_wpss_files);
+      at = put(out, at, cap, files, sizeof files);
+    }
+    if (&native_wpss_services && native_wpss_services[0]) {
+      snprintf(row, sizeof row, "[wpss] svc %.159s", native_wpss_services);
+      at = put(out, at, cap, row, sizeof row);
+    }
+  }
+  // asteroids: the WiFi module on the WPSS (AsteroidsWifi.cpp, wifi=5): stage and error, interrupts and vectors seen, QRTR packets in/out,
+  // DMA KiB used/peak, firmware files served|refused<<16, SMMU result, dropped packets, scans asked, networks, rounds/1024, start result,
+  // DMA failures; the module's own stage counters; the networks of the self-test scan; then the module's log lines since the last slot.
+  if (&native_wlan_stats && native_wlan_stats[0]) {
+    char row[240];
+    snprintf(row, sizeof row, "[wlan] st=%d err=%d irq=%d vec=%x rx=%d tx=%d dma=%dK/%dK fw=%x smmu=%x drop=%d scans=%d nets=%d rounds=%d start=%d dmafail=%d",
+             native_wlan_stats[0], native_wlan_stats[1], native_wlan_stats[2], native_wlan_stats[3], native_wlan_stats[4], native_wlan_stats[5],
+             native_wlan_stats[6], native_wlan_stats[7], native_wlan_stats[8], native_wlan_stats[9], native_wlan_stats[10], native_wlan_stats[11],
+             native_wlan_stats[12], native_wlan_stats[13], native_wlan_stats[14], native_wlan_stats[15]);
+    at = put(out, at, cap, row, sizeof row);
+    if (&nw_wifi_stats) {
+      snprintf(row, sizeof row, "[wlan-nw] stage=%u scans=%u frames=%u beacons=%u networks=%u err=%d", nw_wifi_stats.stage, nw_wifi_stats.scans,
+               nw_wifi_stats.frames, nw_wifi_stats.beacons, nw_wifi_stats.bss_seen, nw_wifi_stats.last_err);
+      at = put(out, at, cap, row, sizeof row);
+    }
+    if (&native_wlan_bss && native_wlan_bss[0]) {
+      snprintf(row, sizeof row, "[wlan] nets %.223s", native_wlan_bss);
+      at = put(out, at, cap, row, sizeof row);
+    }
+    if (&native_wlan_lines && native_wlan_lines) {
+      static uint32_t shown;
+      const uint32_t n = native_wlan_lines_n;
+      uint32_t i = shown;
+      if (n - i > 256) i = n - 256;
+      for (uint32_t k = 0; i < n && k < 100; ++i, ++k) {
+        char line[124];
+        snprintf(line, sizeof line, "[wlan-log] %.110s", native_wlan_lines + (i % 256) * 112);
+        at = put(out, at, cap, line, sizeof line);
+      }
+      shown = i;
     }
   }
   // Battery power source (ShengBattery.cpp): stage, percent, mV, mA, temperature (raw), flags (present, external, charging, full,

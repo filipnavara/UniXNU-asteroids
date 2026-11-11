@@ -223,3 +223,53 @@ int fat_read(FatVolume *v, const FatFile *file, uint64_t offset, void *to, size_
     }
     return FatOk;
 }
+
+/* asteroids: the short (8.3) names in a directory, space separated, directories with a trailing '/', as many as fit in out. */
+int fat_list(FatVolume *v, const char *path, char *out, size_t cap)
+{
+    FatFile dir;
+    if (!out || !cap) return FatReadError;
+    out[0] = 0;
+    int rc = fat_open(v, path, &dir);
+    if (rc) return rc;
+    if (!dir.directory) return FatNotDirectory;
+    uint8_t chunk[512];
+    uint32_t cluster = dir.first_cluster;
+    const int fixed = cluster == 0;
+    if (fixed && v->fat32) cluster = v->root_cluster;
+    uint64_t at = fixed && !v->fat32 ? v->root_offset : 0;
+    uint64_t left = fixed && !v->fat32 ? (uint64_t)v->root_entries * 32 : 0;
+    size_t used = 0;
+    for (uint32_t walked = 0;;) {
+        if (!(fixed && !v->fat32)) {
+            if (!valid(v, cluster) || walked++ > v->clusters) return FatDamaged;
+            at = cluster_offset(v, cluster);
+            left = v->cluster_bytes;
+        }
+        while (left) {
+            const size_t n = left < sizeof chunk ? (size_t)left : sizeof chunk;
+            if ((rc = vread(v, at, chunk, n))) return rc;
+            for (size_t e = 0; e + 32 <= n; e += 32) {
+                const uint8_t *d = chunk + e;
+                if (!d[0]) return FatOk;
+                if (d[0] == 0xe5 || (d[11] & 0x3f) == 0x0f || (d[11] & 0x08) || d[0] == '.') continue;
+                char name[14];
+                size_t k = 0;
+                for (unsigned i = 0; i < 8 && d[i] != ' '; ++i) name[k++] = (char)d[i];
+                if (d[8] != ' ') {name[k++] = '.'; for (unsigned i = 8; i < 11 && d[i] != ' '; ++i) name[k++] = (char)d[i];}
+                if (d[11] & 0x10) name[k++] = '/';
+                if (used + k + 2 > cap) return FatOk;
+                if (used) out[used++] = ' ';
+                for (size_t i = 0; i < k; ++i) out[used++] = name[i];
+                out[used] = 0;
+            }
+            at += n;
+            left -= n;
+        }
+        if (fixed && !v->fat32) return FatOk;
+        uint32_t next;
+        if ((rc = next_cluster(v, cluster, &next))) return rc;
+        if (!valid(v, next)) return FatOk;
+        cluster = next;
+    }
+}
