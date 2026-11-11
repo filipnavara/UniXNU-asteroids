@@ -339,7 +339,10 @@ bool setupTranslation(void *ctx, bool ownBank) {
     logf(6, "wifi: iommu step: sctlr off, cbar/cba2r next");
     tWr(ctx, 0x1800 + 4 * bank, 1);                       // CBA2R: AArch64 descriptors
     logf(6, "wifi: iommu step: cba2r written, tcr2/mair/tcr/ttbr next");
-    tWr(ctx, cb + 0x10, 2);                               // TCR2: 40-bit output
+    // TCR2: 40-bit output and SEP = 7 (sign extension from the upstream bus width, as Linux's arm-smmu writes it). With SEP 0 bit 31
+    // is the sign bit: every IOVA from 0x80000000 belongs to the disabled TTBR1 half (wifi51/52: translation faults at 0xb0002000,
+    // 0xb0004000, the first rings of the window).
+    tWr(ctx, cb + 0x10, 2u | 7u << 15);
     tWr(ctx, cb + 0x38, 0x0444u);                         // MAIR0: 0 Normal NC, 1 Device nGnRE
     tWr(ctx, cb + 0x3c, 0);
     tWr(ctx, cb + 0x30, 32u | 1u << 23);                  // TCR: T0SZ 32 (4 GiB), walks non-cacheable, 4 KiB granule, no TTBR1
