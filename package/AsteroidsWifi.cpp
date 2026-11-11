@@ -43,6 +43,7 @@ extern "C" int32_t asteroids_wpss_soc_wake_in(void);
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
+extern "C" volatile unsigned nw_wifi_scan_mask;  // the module's: the part of the channel list the next self-test scan takes
 extern "C" volatile uint64_t nw_wifi_ddr_range[6];  // the module's: the DMA memory the firmware is told about (QMI host capability)
 extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
 extern "C" volatile int32_t native_wpss_stats[16];
@@ -863,11 +864,14 @@ void wifiThread(void *, wait_result_t) {
     stage(StSmmu);
     // icnss2's host capability ddr_range: the DMA window as the chip addresses it, the WLAN MSA region (stock devicetree
     // wlan_msa_region@a6400000, 12 MiB) and the MSI doorbell's page (icnss2 maps it into its IOVA window; with ranges the firmware
-    // rejects chip writes outside them). wifi-ddr=0 sends none.
-    unsigned ddr = 1;
+    // rejects chip writes outside them). Off by default: with these ranges the firmware reported an invalid PCIe write before HTT
+    // connected (wifi33/34). wifi-ddr=1 sends them, wifi-ddr=2 widens the first range to 4 GiB.
+    unsigned ddr = 0;
     PE_parse_boot_argn("wifi-ddr", &ddr, sizeof ddr);
     if (ddr) {
         nw_wifi_ddr_range[0] = gArena.iova; nw_wifi_ddr_range[1] = gArena.bytes;
+        // wifi-ddr=2: the whole 32-bit space as the first range (to bisect what the firmware rejects).
+        if (ddr == 2) {nw_wifi_ddr_range[0] = 0; nw_wifi_ddr_range[1] = 0x100000000ull;}
         nw_wifi_ddr_range[2] = 0xa6400000; nw_wifi_ddr_range[3] = 0xc00000;
         nw_wifi_ddr_range[4] = kMsiAddr & ~0xfffull; nw_wifi_ddr_range[5] = 0x1000;
     }
@@ -912,7 +916,8 @@ void wifiThread(void *, wait_result_t) {
     PE_parse_boot_argn("wifi-scan", &selfScan, sizeof selfScan);
     PE_parse_boot_argn("wifi-aj", &autoJoin, sizeof autoJoin);
     bool powered = false, scanAsked = false;
-    uint64_t scanAt = 0;
+    uint64_t scanAt = 0, nextStageAt = 0;
+    unsigned scanStage = 0;
     uint64_t nextFaults = 0;
     for (uint64_t n = 0;; ++n) {
         if (pNow() >= nextFaults) {nextFaults = pNow() + 500; faultReport();}
@@ -945,14 +950,33 @@ void wifiThread(void *, wait_result_t) {
             nw_wifi_power(1);
             scanAt = pNow() + 2000;
         }
+        // The moment the WPSS reports a fatal error, in this log's time (the [wpss] rows are sampled every 2 s).
+        static bool wpssDead;
+        if (!wpssDead && native_wpss_stats[3] > 0 && (native_wpss_stats[3] & 1)) {
+            wpssDead = true;
+            logf(3, "wifi: WPSS fatal (slave %x), scan stage %u", native_wpss_stats[3], scanStage);
+        }
+        // wifi-scan=2: the scan in three parts (2.4 GHz, 5 GHz without radar detection, 5 GHz radar channels), 3 s apart, to see which
+        // the firmware does not survive.
+        if (powered && selfScan == 2 && scanAsked && scanStage && scanStage < 3 && nextStageAt && pNow() >= nextStageAt) {
+            nextStageAt = 0;
+            nw_wifi_scan_mask = 1u << scanStage++;
+            const int s = nw_wifi_self_scan();
+            native_wlan_stats[11] = native_wlan_stats[11] + 1;
+            if (s) logf(3, "wifi: scan part %u refused: %d", scanStage, s);
+        }
         if (powered && selfScan && !scanAsked && pNow() >= scanAt) {
             scanAsked = true;
+            if (selfScan == 2) {nw_wifi_scan_mask = 1; scanStage = 1;}
             // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
             const int s = nw_wifi_self_scan();
             native_wlan_stats[11] = native_wlan_stats[11] + 1;
             if (s) logf(3, "wifi: scan refused: %d", s);
         }
-        if (gScanDone) {gScanDone = 0; logNetworks(); stage(StScanned);}
+        if (gScanDone) {
+            gScanDone = 0; logNetworks(); stage(StScanned);
+            if (selfScan == 2) {logf(6, "wifi: scan part %u done", scanStage); nextStageAt = pNow() + 3000;}
+        }
         // The receive rings every 2 s for the first 90 s with the radio on (the firmware asserted in its receive DMA leak check around the
         // first scan's end).
         static uint64_t nextRings, ringsUntil;
