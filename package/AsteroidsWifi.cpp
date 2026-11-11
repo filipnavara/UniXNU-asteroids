@@ -1006,7 +1006,8 @@ void wifiThread(void *, wait_result_t) {
     bool powered = false, scanAsked = false;
     uint64_t scanAt = 0, nextStageAt = 0;
     unsigned scanStage = 0;
-    unsigned fwdLeft = 0;
+    unsigned fwdLeft = 0, idleDumps = 0;
+    uint64_t radioAt = 0;
     uint64_t fwdAt = 0;
     bool fwdEarly = false;
     uint64_t nextFaults = 0;
@@ -1038,7 +1039,14 @@ void wifiThread(void *, wait_result_t) {
             powered = true;
             stage(StInterface);
             nw_wifi_power(1);
-            scanAt = pNow() + 2000;
+            // wifi-scan-delay=N: the self-test scan N seconds after radio on instead of 2 (the firmware died 22.1 s after radio on and
+            // 2.1 s after the scan's start in every boot, the scan always starting at 20.0 s: this tells the two apart), with the
+            // firmware's log dumped at 25 s and 35 s.
+            unsigned scanDelay = 2;
+            PE_parse_boot_argn("wifi-scan-delay", &scanDelay, sizeof scanDelay);
+            scanAt = pNow() + 1000ull * scanDelay;
+            radioAt = pNow();
+            idleDumps = scanDelay > 30 ? 2 : 0;
         }
         // The moment the WPSS reports a fatal error, in this log's time (the [wpss] rows are sampled every 2 s).
         static bool wpssDead;
@@ -1051,6 +1059,11 @@ void wifiThread(void *, wait_result_t) {
         // The firmware's last diag records after it died (and once 15 s after radio on, to see what a healthy stretch logs): 80 a
         // round, oldest first, a round every 2.5 s (the log takes 100 lines a slot).
         if (powered && !fwdEarly && pNow() >= scanAt + 13000 - 2000 && !wpssDead) {fwdEarly = true; nw_fw_diag_dump(0, 60);}
+        if (powered && idleDumps && !wpssDead && pNow() >= radioAt + (idleDumps == 2 ? 25000 : 35000)) {
+            --idleDumps;
+            logf(6, "wifi: %llu s after radio on, WPSS slave %x", (pNow() - radioAt) / 1000, native_wpss_stats[3]);
+            nw_fw_diag_dump(0, 90);
+        }
         if (fwdLeft && pNow() >= fwdAt) {
             fwdLeft -= 80;
             nw_fw_diag_dump(fwdLeft, 80);
