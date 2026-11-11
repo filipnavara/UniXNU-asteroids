@@ -211,6 +211,7 @@ void smmuWr(void *ctx, unsigned o, uint32_t v) {
 // are kept for faultReport().
 IOMemoryMap *gSmmuMap;
 uint32_t gBanks[4], gBankCount, gPages;
+int gDumpSlot1401 = -1;  // the stream-match group of 0x1401 as describeStreams found it
 void describeStreams(const struct smmu_io &io, const char *when) {
     const uint32_t idr0 = smmuRd(io.ctx, 0x20), idr1 = smmuRd(io.ctx, 0x24);
     unsigned count = idr0 & 255;
@@ -223,6 +224,7 @@ void describeStreams(const struct smmu_io &io, const char *when) {
             const uint32_t mask = (smr >> 16) & 0x7fff;
             if (((smr ^ stream) & 0xffff & ~mask) != 0) continue;
             const uint32_t s2cr = smmuRd(io.ctx, 0xc00 + 4 * i), bank = s2cr & 255, type = (s2cr >> 16) & 3;
+            if (stream == kStreams[1] && smr == (0x80000000u | stream)) gDumpSlot1401 = (int)i;
             const unsigned cb = (gPages + bank) * 4096u;
             logf(6, "wifi: smmu %s: stream %x smr[%u]=%08x s2cr=%08x bank %u sctlr=%08x cbar=%08x cba2r=%08x ttbr0=%08x%08x", when, stream, i,
                  smr, s2cr, bank, type ? 0 : smmuRd(io.ctx, cb), smmuRd(io.ctx, 0x1000 + 4 * bank), smmuRd(io.ctx, 0x1800 + 4 * bank),
@@ -281,7 +283,11 @@ bool setupTranslation(void *ctx, bool ownBank) {
     unsigned count = idr0 & 255;
     if (count > 128) count = 128;
     const unsigned pages = 1u << (((idr1 >> 28) & 7) + 1), banks = idr1 & 255;
-    const int slot = findSlot(ctx, kStreams[1], count);
+    // The stream-match group of 0x1401 from the stream dump, not a second scan: wifi44 and wifi49 died between the IDR1 read and the
+    // next logged access, where only that scan ran (the same reads the dump did without fault moments before).
+    const int slot = gDumpSlot1401;
+    logf(6, "wifi: iommu: slot %d from the stream dump (count %u, pages %u, banks %u)", slot, count, pages, banks);
+    stepPause();
     if (slot < 0) {logf(3, "wifi: iommu: no stream-match group for %x", kStreams[1]); return false;}
     const uint32_t s2cr = tRd(ctx, 0xc00 + 4 * slot);
     const uint32_t bank = s2cr & 255;
