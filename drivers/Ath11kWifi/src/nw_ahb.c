@@ -93,4 +93,6 @@ u64 nw_wifi_mhi_pa;
 u64 nw_wifi_ddr_range[6];
 /* Whether the firmware's WMI host memory requests are answered (1, as the vendor host) or only logged (0); set by the board. */
 unsigned nw_wifi_wmi_mem = 1;
+/* Which of the vendor host's WMI_INIT values replace ath11k's (bit mask, see tools/prepare-ath11k.sh); set by the board. */
+unsigned nw_wifi_wmi_vendor;
 u32 nw_wifi_mhi_size;

@@ -72,6 +72,39 @@ s = s.replace(old, new, 1)
 open(path, 'w').write(s)
 PY
 grep -q 'host memory requests' $O/wmi.c || { echo "wmi.c mem req patch missed" >&2; exit 1; }
+# WMI_INIT with the vendor host's values where they differ from ath11k's WCN6750 ones (qcacld wma_set_default_tgt_config, wma's
+# service-ready handlers, wmi_copy_resource_config), each behind a bit of nw_wifi_wmi_vendor (board: wifi-wmi-vendor=MASK, 0 keeps
+# ath11k's): 1 rx decap Ethernet (2) instead of native Wi-Fi (1); 2 sizing, 38 peers and 76 TIDs instead of 16 and 32; 4 flag1 as
+# the vendor sets it (MGMT_COMP_EVT_BUNDLE bit 9, TX_MSDU_ID_NEW_PARTITION bit 10, IPA_DISABLE bit 30; not BSS_CHANNEL_INFO_64 bit
+# 5); 8 flags2 without ath11k's CALC_NEXT_DTIM.
+python3 - "$O/wmi.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = "\tmemcpy(&wmi_ab->wlan_resource_config, &config, sizeof(config));\n"
+assert s.count(old) == 1, "wmi.c init config mark"
+new = """\t{
+\t\t/* Ath11kWifi: the vendor host's values (see tools/prepare-ath11k.sh). */
+\t\textern unsigned nw_wifi_wmi_vendor;
+\t\tif (nw_wifi_wmi_vendor & 1)
+\t\t\tconfig.rx_decap_mode = TARGET_DECAP_MODE_ETH;
+\t\tif (nw_wifi_wmi_vendor & 2) {
+\t\t\tconfig.num_peers = 38;
+\t\t\tconfig.num_tids = 76;
+\t\t}
+\t\tif (nw_wifi_wmi_vendor & 4)
+\t\t\tconfig.flag1 = (config.flag1 & ~BIT(5)) | BIT(9) | BIT(10) | BIT(30);
+\t\tath11k_info(ab, "wmi init: vendor values 0x%x: decap %u peers %u tids %u flag1 0x%x\\n", nw_wifi_wmi_vendor,
+\t\t\t    config.rx_decap_mode, config.num_peers, config.num_tids, config.flag1);
+\t}
+""" + old
+s = s.replace(old, new, 1)
+old = "\twmi_cfg->flags2 = WMI_RSRC_CFG_FLAG2_CALC_NEXT_DTIM_COUNT_SET;\n"
+assert s.count(old) == 1, "wmi.c flags2 mark"
+s = s.replace(old, "\t{\n\t\textern unsigned nw_wifi_wmi_vendor;\n\t\twmi_cfg->flags2 = (nw_wifi_wmi_vendor & 8) ? 0 : WMI_RSRC_CFG_FLAG2_CALC_NEXT_DTIM_COUNT_SET;\n\t}\n", 1)
+open(path, 'w').write(s)
+PY
+grep -q 'nw_wifi_wmi_vendor & 8' $O/wmi.c || { echo "wmi.c vendor init patch missed" >&2; exit 1; }
 
 # The vendor's board data files are named by the board id the firmware reports (icnss2: bdwlan.bNN, three hex digits from 0x100 on);
 # the copy of core.c asks for that name before board.bin.
