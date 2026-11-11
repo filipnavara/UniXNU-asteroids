@@ -269,10 +269,13 @@ uint64_t gMsiIova;  // the MSI doorbell as the chip addresses it, when the windo
 // false (wifi-iommu=1): the MSI doorbell one to one. ownBank true (wifi-iommu=2): icnss2's layout, the DMA window at IOVA 0xb0000000
 // (qcom,iommu-dma-addr-pool), the MSI doorbell's block inside the same window (icnss2 dma_map_resource()s it there) and the WLAN MSA
 // region one to one. An SError ended both earlier attempts (wifi22 somewhere in these steps, wifi42 while reading other banks).
-// The accesses of setupTranslation, each logged before it happens: an SError on this phone ended three attempts before the first
-// step's log line, so the register is named here.
-uint32_t tRd(void *ctx, unsigned o) {logf(6, "wifi: iommu rd %x", o); const uint32_t v = smmuRd(ctx, o); logf(6, "wifi: iommu rd %x = %08x", o, v); return v;}
-void tWr(void *ctx, unsigned o, uint32_t v) {logf(6, "wifi: iommu wr %x = %08x", o, v); smmuWr(ctx, o, v);}
+// The accesses of setupTranslation, each logged before it happens. The boot log keeps these lines only every 2 s (BootLog.c
+// LogPeriodMs), so a line logged less than 2 s before a fatal SError is lost: wifi42-44's logs end at a slot boundary, not at the
+// faulting access. wifi-iommu-pause=MS waits MS milliseconds after each line (2200 makes every line reach the log first).
+unsigned gStepPause, gTransBank = 70;
+void stepPause() {if (gStepPause) IOSleep(gStepPause);}
+uint32_t tRd(void *ctx, unsigned o) {logf(6, "wifi: iommu rd %x", o); stepPause(); const uint32_t v = smmuRd(ctx, o); logf(6, "wifi: iommu rd %x = %08x", o, v); return v;}
+void tWr(void *ctx, unsigned o, uint32_t v) {logf(6, "wifi: iommu wr %x = %08x", o, v); stepPause(); smmuWr(ctx, o, v);}
 bool setupTranslation(void *ctx, bool ownBank) {
     const uint32_t idr0 = tRd(ctx, 0x20), idr1 = tRd(ctx, 0x24);
     unsigned count = idr0 & 255;
@@ -282,6 +285,7 @@ bool setupTranslation(void *ctx, bool ownBank) {
     if (slot < 0) {logf(3, "wifi: iommu: no stream-match group for %x", kStreams[1]); return false;}
     const uint32_t s2cr = tRd(ctx, 0xc00 + 4 * slot);
     const uint32_t bank = s2cr & 255;
+    gTransBank = bank;
     if ((s2cr >> 16) & 3 || bank >= banks) {logf(3, "wifi: iommu: stream %x is not in a translating bank (s2cr %08x)", kStreams[1], s2cr); return false;}
     // ownBank: still the boot loader's bank (reading another bank's registers to look for a free one raised an SError: wifi42), but
     // with icnss2's layout below. Every step is logged first: the fault kills only this thread and the log survives.
@@ -360,9 +364,19 @@ bool setupSmmu() {
         if (!map) return false;
         struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
         describeStreams(io, "before");
+        PE_parse_boot_argn("wifi-iommu-pause", &gStepPause, sizeof gStepPause);
+        if (gStepPause) {logf(6, "wifi: iommu: %u ms after every step", gStepPause); stepPause();}
         const bool ok = setupTranslation(io.ctx, translate == 2);
         describeStreams(io, "after");
         gSmmuMap = map;
+        // With translation on and before the module starts any DMA: the bank's fault state, so a fault from what still runs (the
+        // WPSS, the chip) shows before anything of ours uses the window.
+        for (unsigned round = 0; ok && gStepPause && round < 3; ++round) {
+            const unsigned cb = (gPages + gTransBank) * 4096u;
+            logf(6, "wifi: iommu: translation on, round %u: bank sctlr %08x fsr %08x far %08x%08x", round, smmuRd(io.ctx, cb), smmuRd(io.ctx, cb + 0x58),
+                 smmuRd(io.ctx, cb + 0x64), smmuRd(io.ctx, cb + 0x60));
+            stepPause();
+        }
         if (ok) return true;
         logf(3, "wifi: iommu: falling back to pass-through");
     }
