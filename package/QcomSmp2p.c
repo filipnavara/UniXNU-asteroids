@@ -15,14 +15,17 @@ static void barrier(void)
     __asm__ volatile("dmb oshst" ::: "memory");
 #endif
 }
+/* Names are stored as Linux's smp2p.c stores them (strscpy into 16 bytes): at most 15 characters and a NUL, so a longer name such as
+ * "wlan_ep_power_save" is "wlan_ep_power_s" in the item. */
 static int same_name(const volatile uint32_t *entry, const char *name)
 {
     for (unsigned i = 0; i < 16; ++i) {
         const char c = (char)(entry[i / 4] >> (8 * (i % 4)));
-        if (c != name[i]) return 0;
+        const char want = i < 15 ? name[i] : 0;
+        if (c != want) return 0;
         if (!c) return 1;
     }
-    return name[16] == 0;
+    return 0;
 }
 
 void qcom_smp2p_init_out(QcomSmp2p *s, volatile uint32_t *out, uint16_t local_pid, uint16_t remote_pid)
@@ -46,7 +49,7 @@ int qcom_smp2p_add_entry(QcomSmp2p *s, const char *name)
     const uint32_t valid = s->out[W_COUNTS] >> 16;
     if (valid >= QCOM_SMP2P_MAX_ENTRIES) return -1;
     uint32_t words[4] = {0};
-    for (unsigned i = 0; i < 16 && name[i]; ++i) words[i / 4] |= (uint32_t)(uint8_t)name[i] << (8 * (i % 4));
+    for (unsigned i = 0; i < 15 && name[i]; ++i) words[i / 4] |= (uint32_t)(uint8_t)name[i] << (8 * (i % 4));
     for (unsigned i = 0; i < 4; ++i) s->out[W_ENTRY(valid) + i] = words[i];
     s->out[W_ENTRY(valid) + 4] = 0;
     barrier();
