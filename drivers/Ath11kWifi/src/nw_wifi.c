@@ -79,6 +79,55 @@ void nw_wifi_rx_state(char *b, int n) {
            ring_count(ab, &dp->reo_dst_ring[3], 1), ring_count(ab, &dp->reo_except_ring, 1), ring_count(ab, &dp->rx_rel_ring, 1),
            ring_count(ab, &ar->dp.rxdma_err_dst_ring[0], 1)); }
 void nw_wifi_ring_state(char *b, int n) { if (n) b[0] = 0; }
+/* What the chip did with the receive buffers the host posted (worker only). compare 0 remembers a fingerprint of every posted buffer
+ * (descriptor start, the attention and MPDU start tags, the copied 802.11 header); compare 1 counts the buffers that differ since and
+ * logs the first few: descriptor words and the header's first 16 bytes (frame control, duration, address 1, start of address 2). Also
+ * logs the shared pointer words of the first LMAC rings (refill, per-MAC buffer, ..: host-written wrp and firmware-written rdp) and
+ * how much of the per-MAC buffer ring the firmware filled. */
+#define NW_RX_PROBE_BUFS 4096
+static u32 *rx_sig;
+static u32 rx_buf_sig(const u8 *d) {
+  u32 w[8]; memcpy(&w[0], d, 8); memcpy(&w[2], d + 72, 4); memcpy(&w[3], d + 132, 4); memcpy(&w[4], d + 256, 4); memcpy(&w[5], d + 264, 12);
+  return w[0] ^ w[1] * 3 ^ w[2] * 5 ^ w[3] * 7 ^ w[4] * 11 ^ w[5] * 13 ^ w[6] * 17 ^ w[7] * 19; }
+void nw_wifi_rx_buf_probe(int compare) {
+  if (!g_hw) return;
+  struct ath11k *ar = g_hw->priv; struct ath11k_base *ab = ar->ab; struct dp_rxdma_ring *ring = &ar->dp.rx_refill_buf_ring;
+  if (!rx_sig) rx_sig = kzalloc(NW_RX_PROBE_BUFS * sizeof(u32), GFP_KERNEL);
+  if (!rx_sig) return;
+  struct { int id; u32 w[4]; u8 h[16]; } shown[6]; int posted = 0, changed = 0, id; struct sk_buff *skb;
+  spin_lock_bh(&ring->idr_lock);
+  idr_for_each_entry(&ring->bufs_idr, skb, id) {
+    if (id < 0 || id >= NW_RX_PROBE_BUFS) continue;
+    posted++;
+    const u32 sig = rx_buf_sig(skb->data);
+    if (compare && sig != rx_sig[id]) {
+      if (changed < 6) { shown[changed].id = id; memcpy(shown[changed].w, skb->data, 8); memcpy(&shown[changed].w[2], skb->data + 72, 4);
+        memcpy(&shown[changed].w[3], skb->data + 132, 4); memcpy(shown[changed].h, skb->data + 264, 16); }
+      changed++;
+    }
+    rx_sig[id] = sig;
+  }
+  spin_unlock_bh(&ring->idr_lock);
+  lx_log(6, "wifi: rx bufs %s: %d posted, %d changed", compare ? "compared" : "remembered", posted, changed);
+  for (int i = 0; i < changed && i < 6; i++) {
+    const u8 *h = shown[i].h;
+    lx_log(6, "wifi: rx buf %d: %08x %08x att %08x mpdu %08x hdr %02x%02x %02x%02x %02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x", shown[i].id,
+           shown[i].w[0], shown[i].w[1], shown[i].w[2], shown[i].w[3], h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11],
+           h[12], h[13], h[14], h[15]);
+  }
+  const u32 *wrp = ab->hal.wrp.vaddr, *rdp = ab->hal.rdp.vaddr;
+  if (wrp && rdp) {
+    const u32 *r = rdp + HAL_SRNG_RING_ID_LMAC1_ID_START;
+    lx_log(6, "wifi: lmac wrp %x %x %x %x %x %x %x %x", wrp[0], wrp[1], wrp[2], wrp[3], wrp[4], wrp[5], wrp[6], wrp[7]);
+    lx_log(6, "wifi: lmac rdp %x %x %x %x %x %x %x %x", r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+  }
+  struct dp_srng *mac = &ar->dp.rx_mac_buf_ring[0];
+  if (mac->vaddr) {
+    const u32 *e = (const u32 *)mac->vaddr; int filled = 0; const int entries = mac->size / 8;
+    for (int i = 0; i < entries; i++) if (e[2 * i]) filled++;
+    lx_log(6, "wifi: mac buf ring: %d of %d entries filled, first %08x %08x, ring id %u", filled, entries, e[0], e[1], mac->ring_id);
+  }
+}
 void nw_wifi_htt_stats(int type) { (void)type; }
 int nw_wifi_start(const struct lx_platform *p, const struct nw_board *b) {
   lx_plat = p; nw_board = b; ath11k_debug_mask = b->debug_mask; /* 0: info/warnings and counters only, no HTT/WMI debug formatting in normal traffic. */

@@ -91,7 +91,7 @@ keep = {'_nw_wifi_start', '_nw_wifi_step', '_nw_wifi_stop', '_nw_wifi_stats', '_
         '_nw_wifi_irq_mode', '_nw_wifi_irq_pending', '_nw_wifi_wait_ms', '_nw_wifi_poll'}
 keep.update({'_nw_wifi_control_transport_set', '_nw_wifi_control_attach', '_nw_wifi_control_detach',
              '_nw_wifi_control_receive', '_nw_wifi_control_writable', '_nw_wifi_control_stats_get'})
-keep.update({'_nw_wifi_set_platform', '_nw_wifi_qrtr_rx', '_nw_wifi_qrtr_down', '_nw_wifi_cpr_mv', '_nw_wifi_mhi_pa', '_nw_wifi_ddr_range', '_nw_wifi_mhi_size', '_nw_wifi_self_scan', '_nw_wifi_scan_mask', '_nw_wifi_rx_state'})
+keep.update({'_nw_wifi_set_platform', '_nw_wifi_qrtr_rx', '_nw_wifi_qrtr_down', '_nw_wifi_cpr_mv', '_nw_wifi_mhi_pa', '_nw_wifi_ddr_range', '_nw_wifi_mhi_size', '_nw_wifi_self_scan', '_nw_wifi_scan_mask', '_nw_wifi_rx_state', '_nw_wifi_rx_buf_probe'})
 objs = [o for _, o, _ in jobs]
 names = set()
 llvm = Path(subprocess.run(['brew', '--prefix', 'llvm'], check=True, capture_output=True, text=True).stdout.strip()) / 'bin'

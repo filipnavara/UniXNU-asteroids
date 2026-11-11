@@ -955,6 +955,7 @@ void wifiThread(void *, wait_result_t) {
         if (!wpssDead && native_wpss_stats[3] > 0 && (native_wpss_stats[3] & 1)) {
             wpssDead = true;
             logf(3, "wifi: WPSS fatal (slave %x), scan stage %u", native_wpss_stats[3], scanStage);
+            nw_wifi_rx_buf_probe(1);
         }
         // wifi-scan=2: the scan in three parts (2.4 GHz, 5 GHz without radar detection, 5 GHz radar channels), 3 s apart, to see which
         // the firmware does not survive.
@@ -968,6 +969,7 @@ void wifiThread(void *, wait_result_t) {
         if (powered && selfScan && !scanAsked && pNow() >= scanAt) {
             scanAsked = true;
             if (selfScan == 2) {nw_wifi_scan_mask = 1; scanStage = 1;}
+            nw_wifi_rx_buf_probe(0);  // which receive buffers the chip writes from here on
             // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
             const int s = nw_wifi_self_scan();
             native_wlan_stats[11] = native_wlan_stats[11] + 1;
@@ -975,6 +977,7 @@ void wifiThread(void *, wait_result_t) {
         }
         if (gScanDone) {
             gScanDone = 0; logNetworks(); stage(StScanned);
+            nw_wifi_rx_buf_probe(1);
             if (selfScan == 2) {logf(6, "wifi: scan part %u done", scanStage); nextStageAt = pNow() + 3000;}
         }
         // The receive rings every 2 s for the first 90 s with the radio on (the firmware asserted in its receive DMA leak check around the
