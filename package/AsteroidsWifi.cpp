@@ -10,7 +10,7 @@
 // Devicetree facts (stock 3a devicetree, qcom,wcn6750 "icnss2"): reg msi_addr 0x17110040; interrupts SPI 0x300..0x31f rising edge;
 // iommus <&apps_smmu 0x1400 0x1>; dma-coherent; the WLAN SMP2P "wlan" out state (WpssProbe.cpp).
 //
-// wifi=5 runs it (with the WPSS of wifi>=2). wifi-irq=1 attaches the 32 interrupt lines (otherwise the module polls them). wifi-scan=0 skips the self-test scan the board otherwise asks for once the interface is up
+// wifi=5 runs it (with the WPSS of wifi>=2). wifi-power=0 leaves the chip's RF supplies as they are. wifi-irq=1 attaches the 32 interrupt lines (otherwise the module polls them). wifi-scan=0 skips the self-test scan the board otherwise asks for once the interface is up
 // (its networks go to the log). wifi-dma=MIB sizes the DMA window (default 48).
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -26,6 +26,10 @@
 #include "nw_abi.h"
 #include "nw_control_endpoint.h"
 #include "SmmuBypass.h"
+#include "BootResetCore.h"
+extern "C" {
+#include "QcomRpmh.h"
+}
 
 extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
 extern "C" int asteroids_wpss_qrtr_attach(void (*rx)(void *, const uint8_t *, uint32_t), void (*state)(void *, int), void *context);
@@ -34,6 +38,7 @@ extern "C" int asteroids_wpss_qrtr_send(const void *packet, uint32_t length);
 extern "C" int asteroids_wpss_smp2p_wlan(uint32_t mask, uint32_t value);
 extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
 extern "C" volatile int32_t native_wpss_stats[16];
+extern "C" volatile uint32_t nw_wifi_cpr_mv;  // the module's: the CX voltage the firmware asked for (QMI capability reply)
 extern "C" void _disable_preemption(void);
 extern "C" void _enable_preemption(void);
 
@@ -247,6 +252,94 @@ bool setupSmmu() {
     describeStreams(io, "after");
     gSmmuMap = map;  // kept for the fault reports
     return (result & 1) != 0;
+}
+
+// ---- the chip's supplies: what icnss2 switches on before WLAN (stock devicetree, qcom,wcn6750: vdd-cx-mx smpb3 968-1040 mV,
+// vdd-1.8-xo smpb1 1856-2040 mV, vdd-1.3-rfa smpb2 1256-1408 mV, all RPMh VRM; vdd-ipa-2p2 the fixed 2.2 V regulator pm3001a S1J, switched
+// by PMR735B GPIO1, output-low by default). Without them the firmware asserted in whal_wmac_transition_to_fw_ctrl at the first vdev.
+// The RPMh requests go through active TCS 2 with a fixed wait each (the ADSP thread owns TCS 1 and the RSC's done interrupt); the mode
+// (7: HPM), the voltage in mV, then the enable, as sheng's WifiProbe.cpp sends them.
+constexpr uint64_t kRscDrv = 0x17a20000, kRscTcs = 0xd00, kCmdDb = 0x81c60000, kCmdDbSize = 0x20000;
+constexpr uint64_t kSpmiCore = 0xc400000, kSpmiObsrvr = 0xc440000, kSpmiChnls = 0xc500000, kSpmiCnfg = 0xc42d000;
+struct Vrm {const char *name; uint32_t millivolts;};
+constexpr Vrm kVrms[] = {{"smpb3", 968}, {"smpb1", 1856}, {"smpb2", 1256}};
+volatile uint32_t *mapRegs(uint64_t base, uint64_t size, IOMemoryMap **keep) {
+    IODeviceMemory *memory = IODeviceMemory::withRange(base, size);
+    IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (memory) memory->release();
+    *keep = map;
+    return map ? reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress()) : nullptr;
+}
+// Votes the VRMs named (count of them, voltages in mV); returns a bit per rail voted.
+int voteVrms(const Vrm *vrms, unsigned count) {
+    uint8_t *db = static_cast<uint8_t *>(IOMallocData(kCmdDbSize));
+    IOMemoryMap *dbMap = nullptr, *rscMap = nullptr;
+    volatile uint32_t *dbw = mapRegs(kCmdDb, kCmdDbSize, &dbMap), *r = mapRegs(kRscDrv, 0x10000, &rscMap);
+    int voted = 0;
+    if (db && dbw && r) {
+        for (uint64_t i = 0; i < kCmdDbSize; i += 4) {const uint32_t w = dbw[i / 4]; memcpy(db + i, &w, 4);}
+        const QcomRscLayout layout = qcom_rsc_layout(r[0]);
+        constexpr unsigned tcs = 2;
+        auto send = [&](uint32_t address, uint32_t value) {
+            QcomRpmhWrite writes[16];
+            const unsigned n = qcom_rpmh_active_request(&layout, tcs, &address, &value, 1, writes, 16);
+            for (unsigned i = 0; i < n; ++i) r[(kRscTcs + writes[i].offset) / 4] = writes[i].value;
+            __asm__ volatile("dsb sy" ::: "memory");
+            IOSleep(2);
+            const unsigned m = qcom_rpmh_finish(&layout, tcs, writes, 16);
+            for (unsigned i = 0; i < m; ++i) r[(kRscTcs + writes[i].offset) / 4] = writes[i].value;
+            __asm__ volatile("dsb sy" ::: "memory");
+        };
+        for (unsigned i = 0; i < count; ++i) {
+            QcomRpmhResource res;
+            if (qcom_cmd_db_find(db, kCmdDbSize, vrms[i].name, &res)) {logf(3, "wifi: rail %s not in the command database", vrms[i].name); continue;}
+            send(res.address + 8, 7);
+            send(res.address, vrms[i].millivolts);
+            send(res.address + 4, 1);
+            voted |= 1 << i;
+            logf(6, "wifi: rail %s (%x) voted on at %u mV", vrms[i].name, res.address, vrms[i].millivolts);
+        }
+    }
+    if (db) IOFreeData(db, kCmdDbSize);
+    if (dbMap) dbMap->release();
+    if (rscMap) rscMap->release();
+    return voted;
+}
+// PMR735B (SPMI SID 5) GPIO1 high: the enable of S1J. PMIC5 GPIO registers: 0x40 mode (1 output), 0x44 output source (bit 7 the level,
+// function 0 normal), 0x46 enable (bit 7).
+int enablePaSupply() {
+    IOMemoryMap *core = nullptr, *cnfg = nullptr, *obs = nullptr, *chn = nullptr;
+    br_arbiter arb = {mapRegs(kSpmiCore, 0x3000, &core), mapRegs(kSpmiCnfg, 0x4000, &cnfg), 0};
+    int rc = -12;
+    if (arb.core && arb.cnfg) {
+        const uint32_t apids = arb.core[BR_FEATURES / 4] & BR_FEATURES_APIDS_MASK;
+        volatile uint32_t *o = mapRegs(kSpmiObsrvr, ((uint64_t)BR_OBS_APID_STRIDE * apids + 0xfff) & ~0xfffull, &obs);
+        volatile uint32_t *c = mapRegs(kSpmiChnls, (uint64_t)BR_CHNL_APID_STRIDE * apids, &chn);
+        int apid = -1, owner = -1;
+        for (uint32_t i = 0; i < apids && i < 1024; ++i) {
+            const uint32_t map = arb.core[(BR_APID_MAP + 4 * i) / 4];
+            if (!map || ((map >> 8) & 0xfff) != 0x588) continue;
+            const int o2 = (int)(arb.cnfg[(BR_CNFG_OWNER + 4 * i) / 4] & 7u);
+            if (apid < 0 || o2 == arb.ee) {apid = (int)i; owner = o2;}
+        }
+        if (o && c && apid >= 0) {
+            uint8_t before[4] = {}, after[4] = {};
+            const uint8_t regs[4] = {0x40, 0x44, 0x46, 0x08};
+            for (unsigned i = 0; i < 4; ++i) br_read8(o, &arb, apid, regs[i], &before[i]);
+            rc = br_write8(c, apid, 0x40, 0x01);
+            if (!rc) rc = br_write8(c, apid, 0x44, 0x80);
+            if (!rc) rc = br_write8(c, apid, 0x46, 0x80);
+            IOSleep(2);  // startup-delay-us 1000
+            for (unsigned i = 0; i < 4; ++i) br_read8(o, &arb, apid, regs[i], &after[i]);
+            logf(6, "wifi: S1J enable (pmr735b gpio1, apid %d owner %d): mode/out/en/sts %02x %02x %02x %02x -> %02x %02x %02x %02x, %d", apid,
+                 owner, before[0], before[1], before[2], before[3], after[0], after[1], after[2], after[3], rc);
+        } else {
+            logf(3, "wifi: S1J enable: no arbiter channel for pmr735b gpio1 (apid %d)", apid);
+        }
+    }
+    IOMemoryMap *const maps[4] = {core, cnfg, obs, chn};
+    for (IOMemoryMap *m : maps) if (m) m->release();
+    return rc;
 }
 
 // ---- interrupts: the chip's message interrupts are GIC SPIs, one per vector ----
@@ -489,6 +582,12 @@ void wifiThread(void *, wait_result_t) {
     if (!setupSmmu()) {fail(StSmmu, native_wlan_stats[9]); return;}
     stage(StSmmu);
     stage(StDma);
+    unsigned supplies = 1;
+    PE_parse_boot_argn("wifi-power", &supplies, sizeof supplies);
+    if (supplies) {
+        const int rails = voteVrms(kVrms, sizeof kVrms / sizeof kVrms[0]), pa = enablePaSupply();
+        native_wlan_stats[1] = rails | (pa ? 0x100 : 0);
+    }
     // ArmCpu keeps 24 SPI handlers for every driver, fewer than the chip's 32 vectors: the module polls its interrupt lines every
     // millisecond unless wifi-irq=1 attaches them all (and falls back to polling when they do not fit).
     unsigned wantIrqs = 0;
@@ -527,6 +626,13 @@ void wifiThread(void *, wait_result_t) {
     uint64_t nextFaults = 0;
     for (uint64_t n = 0;; ++n) {
         if (pNow() >= nextFaults) {nextFaults = pNow() + 500; faultReport();}
+        // icnss2's qcom,vreg_ol_cpr: smpb3 at the open-loop voltage the firmware reports, before the radio's MAC comes up.
+        static uint32_t cprApplied;
+        if (supplies && nw_wifi_cpr_mv && nw_wifi_cpr_mv != cprApplied && nw_wifi_cpr_mv >= 600 && nw_wifi_cpr_mv <= 1100) {
+            cprApplied = nw_wifi_cpr_mv;
+            const Vrm cx = {"smpb3", cprApplied};
+            voteVrms(&cx, 1);
+        }
         const int busy = nw_wifi_step();
         if (!powered && nw_wifi_stats.stage >= 4) {
             powered = true;

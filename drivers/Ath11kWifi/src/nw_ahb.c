@@ -81,3 +81,6 @@ void nw_wifi_qrtr_down(void) { if (g_endpoint) { g_endpoint = 0; nw_qrtr_endpoin
 
 /* Register windows: the chip's (from QMI's device information, ath11k_qmi_request_device_info) mapped by the board. */
 void *lx_ioremap(phys_addr_t pa, size_t n) { return nw_board && nw_board->map_phys ? nw_board->map_phys(pa, n) : NULL; }
+
+/* The open-loop voltage of the chip's CX rail from the QMI capability reply (0 until it comes); the board votes its rail to it. */
+u32 nw_wifi_cpr_mv;
