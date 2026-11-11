@@ -990,6 +990,13 @@ void wifiThread(void *, wait_result_t) {
     board.rproc_up = pRprocUp;
     board.smp2p_wlan = pSmp2pWlan;
     board.cpr_voltage = pCprVoltage;
+    // wifi-dp-poll=MS: the module's polled data path groups (REO, WBM, RXDMA rings: register reads and tail pointer writes into the
+    // chip) every MS milliseconds instead of every round; the vendor host touches those registers only on an interrupt and under a
+    // wake vote. The copy engines (WMI, HTT) are still polled every round.
+    unsigned dpPoll = 0;
+    PE_parse_boot_argn("wifi-dp-poll", &dpPoll, sizeof dpPoll);
+    nw_wifi_data_path_poll(dpPoll);
+    if (dpPoll) logf(6, "wifi: data path groups polled every %u ms", dpPoll);
     PE_parse_boot_argn("wifi-debug", &board.debug_mask, sizeof board.debug_mask);  // ath11k's ATH11K_DBG_* bits
     static const struct nw_wifi_events events = {scanDone, connectDone, nullptr, nullptr, nullptr, nullptr, nullptr};
     nw_wifi_set_events(&events);

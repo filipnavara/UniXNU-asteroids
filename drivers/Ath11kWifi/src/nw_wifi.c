@@ -44,6 +44,9 @@ void nw_board_mac(u8 *a) {
   memcpy(a, made, 6); }
 
 void nw_wifi_irq_mode(int delivered) { lx_irq_polling(!delivered); }
+/* How often the polled data path groups run (ms; 0 every round with the copy engines): see lx_irq_raise_all. */
+extern unsigned lx_irq_data_path_period_ms;
+void nw_wifi_data_path_poll(unsigned ms) { lx_irq_data_path_period_ms = ms; }
 void nw_wifi_poll(void) { nw_mainline_poll(); nw_wifi_control_poll(); }
 void nw_wifi_irq_pending(uint32_t vectors) {
   if (!nw_board) return;
