@@ -5,6 +5,7 @@
 #include "core.h"
 #include "debug.h"
 #include "mac.h"
+#include "hif.h"
 #include "nw_qrtr.h"
 #include "nw_mainline.h"
 #include "nw_wifi.h"
@@ -79,6 +80,33 @@ void nw_wifi_rx_state(char *b, int n) {
            ring_count(ab, &dp->reo_dst_ring[3], 1), ring_count(ab, &dp->reo_except_ring, 1), ring_count(ab, &dp->rx_rel_ring, 1),
            ring_count(ab, &ar->dp.rxdma_err_dst_ring[0], 1)); }
 void nw_wifi_ring_state(char *b, int n) { if (n) b[0] = 0; }
+/* Reads back what the host programmed through the register window (worker only): every initialized ring that lives in chip registers
+ * (copy engines, TCL, REO, WBM; not the LMAC rings, which the firmware sets up) must show its ring base address in its first register.
+ * Logs how many do not and the first few, then the WBM idle link descriptor ring (the list the chip's WBM hands receive DMA its link
+ * descriptors from: the firmware counted WBM2RXDMA_LINK ring empty). */
+void nw_wifi_reg_check(const char *when) {
+  if (!g_hw) return;
+  struct ath11k *ar = g_hw->priv; struct ath11k_base *ab = ar->ab; int rings = 0, bad = 0;
+  struct { int id; u32 reg, want, got; } shown[8];
+  for (int i = 0; i < HAL_SRNG_RING_ID_LMAC1_ID_START; i++) {
+    struct hal_srng *s = &ab->hal.srng_list[i];
+    if (!s->initialized) continue;
+    const u32 reg = s->hwreg_base[HAL_SRNG_REG_GRP_R0], want = (u32)s->ring_base_paddr, got = ath11k_hif_read32(ab, reg);
+    rings++;
+    if (got != want) { if (bad < 8) { shown[bad].id = i; shown[bad].reg = reg; shown[bad].want = want; shown[bad].got = got; } bad++; }
+  }
+  lx_log(bad ? 3 : 6, "wifi: reg check %s: %d rings, %d with a wrong base register", when, rings, bad);
+  for (int i = 0; i < bad && i < 8; i++)
+    lx_log(3, "wifi: reg check ring %d: reg %x wrote %08x reads %08x", shown[i].id, shown[i].reg, shown[i].want, shown[i].got);
+  struct dp_srng *idle = &ab->dp.wbm_idle_ring;
+  if (idle->vaddr) {
+    struct hal_srng *s = &ab->hal.srng_list[idle->ring_id];
+    const u32 reg = s->hwreg_base[HAL_SRNG_REG_GRP_R0];
+    lx_log(6, "wifi: wbm idle ring id %u: %d entries, sw hp %x cached tp %x, hw hp %x tp %x, base reg %x reads %08x (wrote %08x)", idle->ring_id,
+           s->num_entries, s->u.src_ring.hp, s->u.src_ring.cached_tp, ath11k_hif_read32(ab, s->hwreg_base[HAL_SRNG_REG_GRP_R2]),
+           ath11k_hif_read32(ab, s->hwreg_base[HAL_SRNG_REG_GRP_R2] + 4), reg, ath11k_hif_read32(ab, reg), (u32)s->ring_base_paddr);
+  }
+}
 /* What the chip did with the receive buffers the host posted (worker only). compare 0 remembers a fingerprint of every posted buffer
  * (descriptor start, the attention and MPDU start tags, the copied 802.11 header); compare 1 counts the buffers that differ since and
  * logs the first few: descriptor words and the header's first 16 bytes (frame control, duration, address 1, start of address 2). Also

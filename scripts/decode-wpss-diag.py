@@ -30,6 +30,19 @@ for path in sorted(log.rglob("slots.txt")):
 for match in rows:
     at, stamp, kind, ident, pay = int(match[1]), int(match[2], 16), int(match[3]), int(match[4]), int(match[5])
     args = [int(a, 16) for a in match[6].split()]
+    when = f"{stamp:06x}"
+    if kind == 7 and ident in messages and len(messages[ident][0]) * 4 == pay:
+        pass  # a module that reads type 7 records itself: the header already carries the id
+    elif kind == 7 and args and not args[0] & 0xff & 3 and (args[0] >> 16) in messages:
+        # A type 7 record kept by a module that read it as the older kind (two header words): its second word is the time
+        # (seconds << 16 | milliseconds) and the id and length word is the first "argument".
+        when = f"{ident}.{pay:03d}s"
+        ident, pay, args = args[0] >> 16, args[0] & 0xff, args[1:]
+    elif kind == 7:
+        when = f"{args[-1] >> 16}.{args[-1] & 0xffff:03d}s" if len(args) > 6 else when
+        args = args[:6]
+    elif ident not in messages or (len(messages[ident][0]) * 4 != pay and pay):
+        continue  # not a record boundary
     types, text = messages.get(ident, ("", f"? id {ident}"))
     out, index = "", 0
     # %d %u %x %p and friends take the arguments in order; anything else is left as written
@@ -47,6 +60,6 @@ for match in rows:
         return f"{value:x}"
     out = re.sub(r"%[0-9.l]*[diuxXp]", take, text)
     extra = " | " + " ".join(f"{a:x}" for a in args[index:pay // 4]) if pay // 4 > index else ""
-    print(f"{at:7d} fw {stamp:06x} t{kind} {out}{extra}")
+    print(f"{at:7d} fw {when:>10} t{kind} {out}{extra}")
 if not rows:
     print("no fwd records in", log)

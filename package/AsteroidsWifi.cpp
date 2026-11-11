@@ -939,6 +939,7 @@ void wifiThread(void *, wait_result_t) {
             unsigned awake = 1;
             PE_parse_boot_argn("wifi-awake", &awake, sizeof awake);
             if (awake) {
+                nw_wifi_reg_check("before the votes");
                 logSmp2p("before");
                 const int32_t ep = asteroids_wpss_smp2p_send(2, 7);
                 logf(6, "wifi: ep power save exit %x", ep);
@@ -982,6 +983,7 @@ void wifiThread(void *, wait_result_t) {
             scanAsked = true;
             if (selfScan == 2) {nw_wifi_scan_mask = 1; scanStage = 1;}
             nw_wifi_rx_buf_probe(0);  // which receive buffers the chip writes from here on
+            nw_wifi_reg_check("before the scan");
             // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
             const int s = nw_wifi_self_scan();
             native_wlan_stats[11] = native_wlan_stats[11] + 1;

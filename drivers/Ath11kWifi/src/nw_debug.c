@@ -25,6 +25,7 @@ int hex_dump_to_buffer(const void *buf, size_t len, int rowsize, int groupsize, 
 /* The firmware's own log (WMI_DIAG_EVENTID; the host asks for it with the QMI ini request's enablefwlog, as ath11k does for the WCN6750).
  * An event's bytes: the WMI TLV header, a word (offset), then records as qca-wifi-host-cmn utils/fwlog/dbglog_host.h reads them:
  * word 0 type << 24 | timestamp, word 1 message id << 16 | vdev << 11 | level << 8 | payload bytes, the payload (32-bit arguments).
+ * This firmware also sends type 7 records with one more header word: type << 24, a time word, then the id and length word.
  * The message ids index the firmware image's Data.msc dictionary (format strings with file and line), decoded off the device. The last
  * records are kept; the board logs them when the WPSS dies. */
 #define NW_FWD_RECORDS 1024
@@ -46,12 +47,18 @@ void nw_fw_diag(const void *data, unsigned long len) {
   while (len >= 8) {
     struct nw_fwd *r = &nw_fwd[nw_fwd_total % NW_FWD_RECORDS];
     u32 w[2]; memcpy(w, p, 8);
+    unsigned long head = 8;
+    if ((w[0] >> 24) == 7) {  /* kept as type 7 << 24 | the time word's low 24 bits, then the id and length word */
+      if (len < 12) { nw_fwd_bad++; break; }
+      u32 w2; memcpy(&w2, p + 8, 4);
+      w[0] = 7u << 24 | (w[1] & 0xffffff); w[1] = w2; head = 12;
+    }
     const unsigned long pay = (w[1] & 0xff), padded = (pay + 3) & ~3ul;
-    if (padded > len - 8) { nw_fwd_bad++; break; }
+    if (padded > len - head) { nw_fwd_bad++; break; }
     r->w0 = w[0]; r->w1 = w[1]; memset(r->a, 0, sizeof(r->a));
-    memcpy(r->a, p + 8, pay < sizeof(r->a) ? pay : sizeof(r->a));
+    memcpy(r->a, p + head, pay < sizeof(r->a) ? pay : sizeof(r->a));
     nw_fwd_total++;
-    p += 8 + padded; len -= 8 + padded;
+    p += head + padded; len -= head + padded;
   }
 }
 /* Logs count records ending skip records before the newest, oldest first: "fwd <timestamp> <id>/<payload bytes>: args". */
