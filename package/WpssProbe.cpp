@@ -505,6 +505,30 @@ extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message) {
     kickSmp2p();
     return (int32_t)value;
 }
+// Both SMP2P items as text for the log: header (version|features, pids, entry counts, flags) and every entry's name=value, ours first.
+extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap) {
+    if (!cap) return;
+    out[0] = 0;
+    uint32_t at = 0;
+    auto put = [&](const char *fmt, auto... v) {
+        if (at + 1 >= cap) return;
+        const int n = snprintf(out + at, cap - at, fmt, v...);
+        if (n > 0) at = at + (uint32_t)n < cap ? at + (uint32_t)n : cap - 1;
+    };
+    for (int side = 0; side < 2; ++side) {
+        const volatile uint32_t *w = side ? gP2p.in : gP2p.out;
+        put("%s", side ? " | in" : "out");
+        if (!w) {put("%s", " none"); continue;}
+        put(" %x %x %x %x %x", w[0], w[1], w[2], w[3], w[4]);
+        const uint32_t valid = w[3] >> 16;
+        for (uint32_t i = 0; i < valid && i < QCOM_SMP2P_MAX_ENTRIES; ++i) {
+            char name[17];
+            for (unsigned c = 0; c < 16; ++c) name[c] = (char)(w[5 + 5 * i + c / 4] >> (8 * (c % 4)));
+            name[16] = 0;
+            put(" %s=%x", name, w[5 + 5 * i + 4]);
+        }
+    }
+}
 // The inbound "wlan_soc_wake" value (the firmware's acknowledgement of a wake request), -1 without the entry.
 extern "C" int32_t asteroids_wpss_soc_wake_in(void) {
     const int wake = gP2p.in ? qcom_smp2p_find_in(&gP2p, "wlan_soc_wake") : -1;

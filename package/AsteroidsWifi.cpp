@@ -40,6 +40,9 @@ extern "C" int asteroids_wpss_qrtr_send(const void *packet, uint32_t length);
 extern "C" int asteroids_wpss_smp2p_wlan(uint32_t mask, uint32_t value);
 extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message);
 extern "C" int32_t asteroids_wpss_soc_wake_in(void);
+extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
+extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
+extern "C" volatile uint32_t nw_wifi_mhi_size;
 extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
 extern "C" volatile int32_t native_wpss_stats[16];
 extern "C" volatile uint32_t nw_wifi_cpr_mv;  // the module's: the CX voltage the firmware asked for (QMI capability reply)
@@ -766,6 +769,55 @@ void joinStep() {
 // ---- the self-test scan: the networks the radio hears go to the log ----
 volatile int gScanDone;
 void scanDone() {gScanDone = 1; wakeWorker();}
+// The firmware's MHI state words (icnss2 icnss_get_mhi_state / icnss_is_pci_ep_awake: the WPSS-chip link state at +0, the endpoint awake
+// word at +4), mapped once the QMI device information named them; -1 before.
+volatile uint32_t *mhiWords() {
+    static volatile uint32_t *words;
+    static IOMemoryMap *keep;
+    static uint64_t mapped;
+    const uint64_t pa = nw_wifi_mhi_pa;
+    if (!pa || (pa & 3) || pa == mapped) return words;
+    unsigned allowed = 1;  // wifi-mhi=0: never map them
+    PE_parse_boot_argn("wifi-mhi", &allowed, sizeof allowed);
+    if (!allowed) return nullptr;
+    mapped = pa;
+    volatile uint32_t *page = mapRegs(pa & ~0xfffull, 0x1000, &keep);
+    words = page ? page + (pa & 0xfff) / 4 : nullptr;
+    logf(6, "wifi: mhi state words at %llx (size %x): %s", pa, nw_wifi_mhi_size, words ? "mapped" : "map failed");
+    return words;
+}
+int64_t mhiWord(unsigned index) {
+    volatile uint32_t *w = mhiWords();
+    return w && (index * 4 + 4 <= (nw_wifi_mhi_size ? nw_wifi_mhi_size : 8)) ? (int64_t)w[index] : -1;
+}
+void logSmp2p(const char *when) {
+    char text[480];
+    asteroids_wpss_smp2p_dump(text, sizeof text);
+    // log lines hold about 100 characters
+    const size_t n = strlen(text);
+    for (size_t at = 0, part = 0; at < n; at += 80, ++part) {
+        char piece[81];
+        strlcpy(piece, text + at, sizeof piece);
+        logf(6, "wifi: smp2p %s %zu: %s", when, part, piece);
+    }
+}
+// icnss2's SoC wake handshake (main.c icnss_send_smp2p + fw_soc_wake_ack_handler): the message (4 request, 5 release, sequence << 16) on
+// the outbound "wlan_soc_wake" entry, then the firmware acknowledges by flipping bit 0 of its inbound "wlan_soc_wake" entry (the
+// qcom,smp2p-soc-wake-ack interrupt, either edge) within SMP2P_SOC_WAKE_TIMEOUT, 500 ms. Returns the milliseconds to the ack, -60
+// without one.
+int socWake(uint32_t message) {
+    const int32_t before = asteroids_wpss_soc_wake_in();
+    const int64_t link = mhiWord(0), awake = mhiWord(1);
+    const uint64_t start = pNow();
+    const int32_t sent = asteroids_wpss_smp2p_send(1, message);
+    int32_t now = before;
+    while (pNow() - start < 500 && (now = asteroids_wpss_soc_wake_in()) == before) IOSleep(1);
+    const int ms = now != before ? (int)(pNow() - start) : -60;
+    logf(ms >= 0 ? 6 : 3, "wifi: soc wake %s %x: in %x -> %x, %s %d ms; mhi %lld/%lld -> %lld/%lld", message == 4 ? "req" : "rel",
+         sent, before, now, ms >= 0 ? "ack after" : "no ack in", ms >= 0 ? ms : 500, link, awake, mhiWord(0), mhiWord(1));
+    return ms;
+}
+
 void logNetworks() {
     const int count = nw_wifi_bss_count();
     native_wlan_stats[12] = count;
@@ -868,10 +920,14 @@ void wifiThread(void *, wait_result_t) {
             unsigned awake = 1;
             PE_parse_boot_argn("wifi-awake", &awake, sizeof awake);
             if (awake) {
-                const int32_t before = asteroids_wpss_soc_wake_in();
-                const int32_t ep = asteroids_wpss_smp2p_send(2, 7), wake = asteroids_wpss_smp2p_send(1, 4);
-                IOSleep(20);
-                logf(6, "wifi: awake votes: ep power save exit %x, soc wake %x, soc wake in %x -> %x", ep, wake, before, asteroids_wpss_soc_wake_in());
+                logSmp2p("before");
+                const int32_t ep = asteroids_wpss_smp2p_send(2, 7);
+                logf(6, "wifi: ep power save exit %x", ep);
+                const int ack = socWake(4);
+                // wifi-awake=2: when the first request goes unanswered, a release and a second request (an ack is a flip, so a lost first
+                // edge would show on the next one).
+                if (ack < 0 && awake >= 2) {socWake(5); socWake(4);}
+                logSmp2p("after");
             }
             powered = true;
             stage(StInterface);
@@ -894,6 +950,12 @@ void wifiThread(void *, wait_result_t) {
             nextRings = pNow() + 2000;
             char rings[160]; nw_wifi_rx_state(rings, sizeof rings);
             if (rings[0]) logf(6, "wifi: rings %s", rings);
+            static int64_t lastWake = -2, lastLink = -2, lastAwake = -2;
+            const int64_t wake = asteroids_wpss_soc_wake_in(), link = mhiWord(0), up = mhiWord(1);
+            if (wake != lastWake || link != lastLink || up != lastAwake) {
+                lastWake = wake; lastLink = link; lastAwake = up;
+                logf(6, "wifi: soc wake in %llx, mhi state %lld, ep awake %lld", wake, link, up);
+            }
         }
         if (gConnectDone >= 0) {
             struct nw_wifi_status st; nw_wifi_status_get(&st);

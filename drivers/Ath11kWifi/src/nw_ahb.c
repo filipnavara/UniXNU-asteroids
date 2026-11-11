@@ -84,3 +84,7 @@ void *lx_ioremap(phys_addr_t pa, size_t n) { return nw_board && nw_board->map_ph
 
 /* The open-loop voltage of the chip's CX rail from the QMI capability reply (0 until it comes); the board votes its rail to it. */
 u32 nw_wifi_cpr_mv;
+/* The firmware's MHI state words (QMI device information, vendor TLVs 0x12/0x13; 0 until it comes): link state at +0, endpoint
+ * awake at +4. The board reads them around its SoC wake handshake. */
+u64 nw_wifi_mhi_pa;
+u32 nw_wifi_mhi_size;
