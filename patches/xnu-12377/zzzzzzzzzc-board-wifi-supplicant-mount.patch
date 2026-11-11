@@ -1,0 +1,16 @@
+asteroids: the Wi-Fi supplicant's executable from the GPU add-on's wifi-bin/, shown over /usr/libexec (the executable half of sheng's
+sheng-wifi-launchd-cache.patch; the cache half is zzzzzzzzzb). xpcproxy's system policy wants a system executable path for the
+org.unixnu.wifi.supplicant job, /usr/libexec/unixnu-wpa_supplicant; without a wifi-bin/ in the add-on nothing mounts.
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8709,4 +8709,10 @@
+ 	printf("launchd cache mount stage %d status %d\n", launchd_cache_stage, launchd_cache_status);
++	static const char wifi_bin_source[] = "/private/var/ngpu/wifi-bin", wifi_bin_point[] = "/usr/libexec";
++	static volatile int wifi_bin_stage, wifi_bin_status;
++	native_gpu_addon_mount(p, scratch, 0xc00, wifi_bin_source, sizeof(wifi_bin_source),
++	    wifi_bin_point, sizeof(wifi_bin_point), "/usr/libexec/launchd_cache_loader",
++	    "/usr/libexec/unixnu-wpa_supplicant", &wifi_bin_stage, &wifi_bin_status);
++	printf("wifi: service executable mount stage %d status %d\n", wifi_bin_stage, wifi_bin_status);
+ 	native_cryptex_os_view(p, scratch);
+ 	native_gestalt_cache_drop(p, scratch);
+ 	native_ls_store_drop(p, scratch);

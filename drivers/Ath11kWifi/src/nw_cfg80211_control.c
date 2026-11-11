@@ -558,7 +558,10 @@ int nw_wifi_self_scan(void) {
   u8 *bytes = kmalloc(NW_CONTROL_HEADER_SIZE + 16 + sizeof(freqs), GFP_KERNEL); struct nw_control_builder b; struct nw_control_view view;
   if (!bytes) return -ENOMEM;
   if (nw_control_begin(&b, bytes, NW_CONTROL_HEADER_SIZE + 16 + sizeof(freqs), NW_CONTROL_REQUEST, NW_CONTROL_SCAN, 0, owner, generation, 0) ||
-      nw_control_put(&b, NW_CONTROL_ATTR_SCAN_FREQUENCIES, freqs, 4 * count) || nw_control_decode(b.bytes, b.length, &view)) {
+      nw_control_put(&b, NW_CONTROL_ATTR_SCAN_FREQUENCIES, freqs, 4 * count) ||
+      /* one wildcard SSID (length byte 0), as wpa_supplicant sends: an active scan, and scan() always points the request at its SSID
+       * table, which rdev_scan refuses with none in it (WARN at rdev-ops.h, -EINVAL) */
+      nw_control_put(&b, NW_CONTROL_ATTR_SCAN_SSIDS, (const u8[33]){0}, 33) || nw_control_decode(b.bytes, b.length, &view)) {
     kfree(bytes); return -EINVAL;
   }
   rtnl_lock();

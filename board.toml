@@ -565,6 +565,13 @@ trust_components = ["StaticTrustCache", "Cryptex1,SystemTrustCache", "Cryptex1,A
 gpu_addon = true
 # The default wallpaper's layers as PNG (make-wallpaper-overlay.py): its HEIC images need Apple's hardware HEVC decoder (sheng's).
 wallpapers = ["ipados27", "ipados27-floating"]
+# Wi-Fi (drivers/Ath11kWifi): wpa_supplicant with the -Dsheng backend, its job merged into the OS launchd cache, its executable in the
+# add-on's wifi-bin/ (shown over /usr/libexec by patches/xnu-12377/zzzzzzzzzc). UNIXNU_WIFI_JOIN adds the join test's network (never in
+# a release).
+wifi_tool = "scripts/build-wifi-userspace.py"
+wifi_target = "ios27"
+wifi_launchd_cache = true
+wifi_bin_prefix = "wifi-bin"
 
 [os_overrides."ipados-27.0.1-24A446".payload.runtime.launchd_job_environment."com.apple.iconservices.iconservicesagent"]
 # CoreImage on the CPU for icons, the rest of the agent on the GPU (sheng's): CoreImage looks its built-in kernels up by name

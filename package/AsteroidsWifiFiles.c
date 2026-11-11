@@ -49,3 +49,41 @@ int asteroids_wifi_vfs_read(const char *name, uint8_t **data, size_t *size)
     *data = buffer; *size = length;
     return 0;
 }
+
+/* The unattended join test's file (AsteroidsWifi.cpp joinStep), in the Data add-on's wifi-test directory (build-wifi-userspace.py, only
+ * with UNIXNU_WIFI_JOIN). EAGAIN until the add-on is installed. */
+extern volatile int native_gpu_addon_stage;
+int asteroids_wifi_join_read(uint8_t **data, size_t *size);
+static int read_path(const char *path, uint8_t **data, size_t *size)
+{
+    *data = NULL; *size = 0;
+    vfs_context_t ctx = vfs_context_kernel();
+    vnode_t vp = NULL;
+    int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
+    uint8_t *buffer = NULL;
+    size_t length = 0;
+    if (!error) {
+        struct vnode_attr va;
+        VATTR_INIT(&va);
+        VATTR_WANTED(&va, va_data_size);
+        error = vnode_getattr(vp, &va, ctx);
+        if (!error && (vnode_vtype(vp) != VREG || !va.va_data_size || va.va_data_size > 4096)) error = EINVAL;
+        if (!error) {
+            length = (size_t)va.va_data_size;
+            buffer = IOMallocData(length);
+            int resid = 0;
+            error = buffer ? vn_rdwr(UIO_READ, vp, (caddr_t)buffer, (int)length, 0, UIO_SYSSPACE, IO_NOAUTH, vfs_context_ucred(ctx), &resid,
+                                     vfs_context_proc(ctx)) : ENOMEM;
+            if (!error && resid) error = EIO;
+        }
+    }
+    if (vp) vnode_close(vp, FREAD, ctx);
+    if (error) {if (buffer) IOFreeData(buffer, length); return error;}
+    *data = buffer; *size = length;
+    return 0;
+}
+int asteroids_wifi_join_read(uint8_t **data, size_t *size)
+{
+    if (native_gpu_addon_stage < 1) return EAGAIN;
+    return read_path("/private/var/ngpu/wifi-test/join.txt", data, size);
+}

@@ -23,3 +23,5 @@ zzzzzzzzz-board-sigp-reinit-assert.patch
 zzzzzzzzza-board-wcomb-carveouts.patch
 # The OS launchd cache from the GPU add-on's xpc/, so board-selected job environment values apply (sheng's cache mount).
 zzzzzzzzzb-board-launchd-cache-overlay.patch
+# The Wi-Fi supplicant's executable from the add-on's wifi-bin/ over /usr/libexec (sheng's mount, the executable half).
+zzzzzzzzzc-board-wifi-supplicant-mount.patch

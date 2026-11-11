@@ -10,7 +10,7 @@
 // Devicetree facts (stock 3a devicetree, qcom,wcn6750 "icnss2"): reg msi_addr 0x17110040; interrupts SPI 0x300..0x31f rising edge;
 // iommus <&apps_smmu 0x1400 0x1>; dma-coherent; the WLAN SMP2P "wlan" out state (WpssProbe.cpp).
 //
-// wifi=5 runs it (with the WPSS of wifi>=2). wifi-power=0 leaves the chip's RF supplies as they are. wifi-irq=1 attaches the 32 interrupt lines (otherwise the module polls them). wifi-scan=0 skips the self-test scan the board otherwise asks for once the interface is up
+// wifi-aj=1 joins the network of join.txt (test builds only, see joinStep). wifi=5 runs it (with the WPSS of wifi>=2). wifi-power=0 leaves the chip's RF supplies as they are. wifi-irq=1 attaches the 32 interrupt lines (otherwise the module polls them). wifi-scan=0 skips the self-test scan the board otherwise asks for once the interface is up
 // (its networks go to the log). wifi-dma=MIB sizes the DMA window (default 48).
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -23,6 +23,8 @@
 #include <sys/errno.h>
 #include <pexpert/pexpert.h>
 #include <stdarg.h>
+#include <sys/kern_control.h>
+#include <sys/kpi_mbuf.h>
 #include "nw_abi.h"
 #include "nw_control_endpoint.h"
 #include "SmmuBypass.h"
@@ -531,10 +533,132 @@ int pRprocUp(unsigned waitMs) {
 }
 int pSmp2pWlan(uint32_t mask, uint32_t value) {return asteroids_wpss_smp2p_wlan(mask, value);}
 
-// ---- the native control endpoint (org.unixnu.wifi.control): cfg80211's start binds to it. No socket yet (no wpa_supplicant on this
-// board), so no session ever opens; sheng's WifiProbe.cpp registers the kernel control socket here.
-int controlSend(void *, uint64_t, const void *, size_t) {return NW_CONTROL_SEND_CLOSED;}
+// ---- the native control endpoint (org.unixnu.wifi.control): the kernel control socket wpa_supplicant's -Dsheng backend connects to
+// (sheng's WifiProbe.cpp). cfg80211's start binds to the transport; one client at a time owns the radio.
+struct ControlClient {uint64_t session; uint32_t unit;};
+kern_ctl_ref gControlRef;
+IOLock *gControlLock;
+ControlClient *gControlClient;
+volatile uint32_t gControlOpens;
+errno_t controlError(int status) {
+    switch (status) {
+        case NW_CONTROL_OK: return 0;
+        case NW_CONTROL_INVALID: return EINVAL;
+        case NW_CONTROL_BUSY: return EWOULDBLOCK;
+        case NW_CONTROL_NOT_READY: return ENXIO;
+        case NW_CONTROL_AUTH_FAILED: return EACCES;
+        case NW_CONTROL_TIMED_OUT: return ETIMEDOUT;
+        case NW_CONTROL_UNSUPPORTED: return EOPNOTSUPP;
+        case NW_CONTROL_NO_MEMORY: return ENOBUFS;
+        case NW_CONTROL_NOT_FOUND: return ENOENT;
+        case NW_CONTROL_STALE: return ESTALE;
+        default: return EIO;
+    }
+}
+errno_t controlConnect(kern_ctl_ref, sockaddr_ctl *address, void **information) {
+    auto *owner = static_cast<ControlClient *>(IOMalloc(sizeof(ControlClient)));
+    if (!owner) return ENOMEM;
+    const int status = nw_wifi_control_attach(&owner->session);
+    if (status) {IOFree(owner, sizeof(*owner)); return controlError(status);}
+    owner->unit = address->sc_unit;
+    IOLockLock(gControlLock); gControlClient = owner; IOLockUnlock(gControlLock);
+    gControlOpens = gControlOpens + 1;
+    *information = owner;
+    return 0;
+}
+errno_t controlDisconnect(kern_ctl_ref, uint32_t, void *information) {
+    if (!information) return 0;  // XNU calls disconnect after a failed connect, with no client context
+    auto *owner = static_cast<ControlClient *>(information);
+    nw_wifi_control_detach(owner->session);
+    IOLockLock(gControlLock); if (gControlClient == owner) gControlClient = nullptr; IOLockUnlock(gControlLock);
+    IOFree(owner, sizeof(*owner));
+    return 0;
+}
+int controlReadMbuf(void *source, void *destination, size_t length) {return mbuf_copydata(static_cast<mbuf_t>(source), 0, length, destination);}
+errno_t controlReceive(kern_ctl_ref, uint32_t, void *information, mbuf_t packet, int) {
+    auto *owner = static_cast<ControlClient *>(information);
+    const int status = nw_wifi_control_receive(owner->session, mbuf_pkthdr_len(packet), controlReadMbuf, packet);
+    mbuf_freem(packet);
+    return controlError(status);
+}
+void controlReceived(kern_ctl_ref, uint32_t, void *information, int) {nw_wifi_control_writable(static_cast<ControlClient *>(information)->session);}
+errno_t controlGetOption(kern_ctl_ref, uint32_t, void *information, int option, void *bytes, size_t *length) {
+    if (option != NW_CONTROL_GET_SESSION) return ENOPROTOOPT;
+    if (!length) return EINVAL;
+    if (!bytes || *length < sizeof(uint64_t)) {*length = sizeof(uint64_t); return EMSGSIZE;}
+    const uint64_t session = static_cast<ControlClient *>(information)->session;
+    memcpy(bytes, &session, sizeof(session));
+    *length = sizeof(session);
+    return 0;
+}
+int controlSend(void *, uint64_t session, const void *bytes, size_t length) {
+    if (!gControlLock) return NW_CONTROL_SEND_CLOSED;
+    IOLockLock(gControlLock);
+    const bool active = gControlClient && gControlClient->session == session;
+    const uint32_t unit = active ? gControlClient->unit : 0;
+    IOLockUnlock(gControlLock);
+    if (!active) return NW_CONTROL_SEND_CLOSED;
+    const errno_t result = ctl_enqueuedata(gControlRef, unit, const_cast<void *>(bytes), length, CTL_DATA_EOR);  // no lock held
+    if (!result) return NW_CONTROL_SEND_OK;
+    if (result == ENOBUFS || result == EWOULDBLOCK) return NW_CONTROL_SEND_AGAIN;
+    return NW_CONTROL_SEND_CLOSED;
+}
 void controlWake(void *) {wakeWorker();}
+// Registers the socket (when it can) and installs the transport, which cfg80211's start needs either way.
+int controlStart() {
+    if (!gControlLock) gControlLock = IOLockAlloc();
+    if (!gControlLock) return ENOMEM;
+    kern_ctl_reg registration{};
+    snprintf(registration.ctl_name, sizeof(registration.ctl_name), "%s", NW_CONTROL_NAME);
+    registration.ctl_flags = CTL_FLAG_PRIVILEGED | CTL_FLAG_REG_EXTENDED;
+    registration.ctl_sendsize = 256 * 1024; registration.ctl_recvsize = 512 * 1024;
+    registration.ctl_connect = controlConnect; registration.ctl_disconnect = controlDisconnect;
+    registration.ctl_send = controlReceive; registration.ctl_getopt = controlGetOption; registration.ctl_rcvd = controlReceived;
+    const errno_t registered = gControlRef ? 0 : ctl_register(&registration, &gControlRef);
+    if (registered) {gControlRef = nullptr; logf(3, "wifi: control socket %s not registered: %d", NW_CONTROL_NAME, registered);}
+    static const struct nw_control_transport transport = {nullptr, controlSend, controlWake};
+    const int status = nw_wifi_control_transport_set(&transport);
+    if (status) logf(3, "wifi: control transport refused: %d", status);
+    return registered ? registered : status;
+}
+
+// ---- unattended join test (wifi-aj=1): join.txt in the Data add-on (the network name on the first line, its key on the second), staged
+// only by a build made with UNIXNU_WIFI_JOIN; joined like the wireless daemon's join, through the supplicant. The key never reaches the log.
+extern "C" int asteroids_wifi_join_read(uint8_t **data, size_t *size);
+volatile int gConnectDone = -1;
+void connectDone(int result) {gConnectDone = result; wakeWorker();}
+struct Join {char ssid[33]; char key[65]; size_t ssidLen, keyLen; bool loaded, gaveUp; unsigned rounds; uint64_t next;} gJoin;
+void joinStep() {
+    if (gJoin.gaveUp || pNow() < gJoin.next) return;
+    gJoin.next = pNow() + 5000;
+    if (!gJoin.loaded) {
+        uint8_t *file = nullptr; size_t length = 0;
+        const int rc = asteroids_wifi_join_read(&file, &length);
+        if (rc) {if (++gJoin.rounds > 24) {gJoin.gaveUp = true; logf(4, "wifi: join test: no join.txt (%d)", rc);} return;}
+        size_t i = 0, o = 0;
+        while (i < length && file[i] != '\n' && o < 32) gJoin.ssid[o++] = (char)file[i++];
+        gJoin.ssidLen = o;
+        while (i < length && file[i] != '\n') ++i;
+        ++i; o = 0;
+        while (i < length && file[i] != '\n' && file[i] != '\r' && o < 64) gJoin.key[o++] = (char)file[i++];
+        gJoin.keyLen = o;
+        memset(file, 0, length);
+        IOFreeData(file, length);
+        gJoin.loaded = true; gJoin.rounds = 0;
+        logf(6, "wifi: join test: a %zu byte network name and a %zu byte key", gJoin.ssidLen, gJoin.keyLen);
+    }
+    struct nw_wifi_status st; nw_wifi_status_get(&st);
+    if (st.state >= NW_STA_AUTH) return;  // joining or joined: the events tell
+    if (++gJoin.rounds > 24) {gJoin.gaveUp = true; memset(gJoin.key, 0, sizeof gJoin.key); logf(4, "wifi: join test gave up"); return;}
+    bool found = false;
+    struct nw_bss_info *bss = static_cast<struct nw_bss_info *>(IOMallocData(sizeof(struct nw_bss_info)));
+    for (int i = 0, n = nw_wifi_bss_count(); bss && i < n && !found; ++i)
+        found = !nw_wifi_bss_get(i, bss) && bss->ssid_len == gJoin.ssidLen && !memcmp(bss->ssid, gJoin.ssid, gJoin.ssidLen);
+    if (bss) IOFreeData(bss, sizeof(struct nw_bss_info));
+    if (!found) {logf(6, "wifi: join test round %u: the network is not among %d seen", gJoin.rounds, nw_wifi_bss_count()); nw_wifi_scan(nullptr, 0); return;}
+    const int r = nw_wifi_connect(reinterpret_cast<const uint8_t *>(gJoin.ssid), gJoin.ssidLen, nullptr, gJoin.keyLen ? gJoin.key : nullptr, gJoin.keyLen);
+    logf(6, "wifi: join test round %u: join requested: %d (supplicant sessions %u)", gJoin.rounds, r, gControlOpens);
+}
 
 // ---- the self-test scan: the networks the radio hears go to the log ----
 volatile int gScanDone;
@@ -609,19 +733,18 @@ void wifiThread(void *, wait_result_t) {
     board.rproc_up = pRprocUp;
     board.smp2p_wlan = pSmp2pWlan;
     PE_parse_boot_argn("wifi-debug", &board.debug_mask, sizeof board.debug_mask);  // ath11k's ATH11K_DBG_* bits
-    static const struct nw_wifi_events events = {scanDone, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    static const struct nw_wifi_events events = {scanDone, connectDone, nullptr, nullptr, nullptr, nullptr, nullptr};
     nw_wifi_set_events(&events);
-    static const struct nw_control_transport transport = {nullptr, controlSend, controlWake};
-    const int control = nw_wifi_control_transport_set(&transport);
-    if (control) logf(3, "wifi: control transport refused: %d", control);
+    controlStart();
     const int r = nw_wifi_start(&plat, &board);
     native_wlan_stats[14] = r;
     if (r) {fail(StStarted, r); return;}
     stage(StStarted);
     nw_wifi_irq_mode(gIrqs);
 
-    unsigned selfScan = 1;
+    unsigned selfScan = 1, autoJoin = 0;
     PE_parse_boot_argn("wifi-scan", &selfScan, sizeof selfScan);
+    PE_parse_boot_argn("wifi-aj", &autoJoin, sizeof autoJoin);
     bool powered = false, scanAsked = false;
     uint64_t scanAt = 0;
     uint64_t nextFaults = 0;
@@ -649,6 +772,13 @@ void wifiThread(void *, wait_result_t) {
             if (s) logf(3, "wifi: scan refused: %d", s);
         }
         if (gScanDone) {gScanDone = 0; logNetworks(); stage(StScanned);}
+        if (gConnectDone >= 0) {
+            struct nw_wifi_status st; nw_wifi_status_get(&st);
+            logf(6, "wifi: join result %d, state %u, %u MHz, %d dBm", gConnectDone, st.state, st.freq_mhz, st.signal_dbm);
+            native_wlan_stats[10] = gConnectDone;
+            gConnectDone = -1;
+        }
+        if (autoJoin && powered && scanAsked) joinStep();
         if (!busy) {
             const unsigned wait = nw_wifi_wait_ms(gIrqs ? 1000 : 1);
             if (wait) waitWork(wait);
