@@ -102,6 +102,8 @@ WEAK volatile int32_t native_wpss_stats[16];
 WEAK char native_wpss_text[96];
 WEAK char native_wpss_services[160];
 WEAK char native_wpss_files[256];
+WEAK volatile uint32_t native_wpss_wlen[4];
+WEAK char native_wpss_crash[224];
 WEAK volatile int32_t native_wlan_stats[16];
 WEAK char native_wlan_bss[224];
 WEAK char *native_wlan_lines;

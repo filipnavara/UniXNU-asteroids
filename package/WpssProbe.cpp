@@ -16,6 +16,8 @@
 // on its edge so the services it announces show in the log. With wifi=5 the router link is handed to the WiFi module (asteroids_wpss_qrtr_*)
 // instead. wifi-fw=PATH names the image (as sheng_fw_open takes it); otherwise the firmware partition's qca6750/wpss and wpss are tried.
 #include <IOKit/IOLib.h>
+#include <IOKit/IODeviceMemory.h>
+#include <IOKit/IOMemoryDescriptor.h>
 #include <kern/thread.h>
 #include <sys/errno.h>
 #include <pexpert/pexpert.h>
@@ -33,7 +35,8 @@ extern "C" {
 // from auth_and_reset to "ready", [7] GLINK messages in, [8] out, [9] IPCRTR up | version agreed << 14 | link broken << 15, [10] last
 // SCM x0, [11] QRTR packets in, [12] the WPSS's node (-1 before its hello), [13] services announced, [14] WLFW (69) instance (-1 none),
 // [15] the WPSS's inbound "wlan" bits | "wlan_soc_wake" bits << 8 | firmware source index << 16 | module packets queued << 20
-extern "C" {volatile int32_t native_wpss_stats[16]; char native_wpss_text[96]; char native_wpss_services[160]; char native_wpss_files[256];}
+extern "C" {volatile int32_t native_wpss_stats[16]; char native_wpss_text[96]; char native_wpss_services[160]; char native_wpss_files[256];
+            volatile uint32_t native_wpss_wlen[4]; char native_wpss_crash[224];}
 extern "C" int asteroids_modem_list(const char *path, char *out, size_t cap);
 
 namespace {
@@ -105,6 +108,14 @@ void readCrashReason() {
     for (; n < sizeof text - 1 && n < size; ++n) {const char c = (char)smem.base[at + n]; if (!c) break; text[n] = c >= 32 && c < 127 ? c : '.';}
     text[n] = 0;
     if (n) note("crash: ", text);
+    // the whole reason (the note keeps 80 characters of it)
+    size_t m = 0;
+    for (; m < sizeof native_wpss_crash - 1 && m < size; ++m) {
+        const char c = (char)smem.base[at + m];
+        if (!c) break;
+        native_wpss_crash[m] = c >= 32 && c < 127 ? c : '.';
+    }
+    native_wpss_crash[m] = 0;
 }
 
 // ---- the survey: reads only ----
@@ -340,7 +351,33 @@ int openAndBoot(const char *chosen) {
     }
 }
 
+// The WCN6750's WLAN enable (stock devicetree bt_wcn6750: qcom,wl-reset-gpio = <&tlmm 44>), which Android's Bluetooth power driver drives;
+// nothing does here, and with it low the firmware asserted in whal_wmac_transition_to_fw_ctrl at the first vdev. Driven high before the
+// WPSS starts (wifi-wlen=0 leaves it). TLMM 0xf100000, 0x1000 per pin: config at +0 (bit 9 output enable), in/out at +4 (bit 1 the level).
+// [0] config before | in/out before << 16, [1] config | in/out after << 16
+constexpr uint64_t kTlmm = 0xf100000;
+constexpr unsigned kWlEnPin = 44;
+void wlanEnable() {
+    unsigned want = 1;
+    PE_parse_boot_argn("wifi-wlen", &want, sizeof want);
+    IODeviceMemory *memory = IODeviceMemory::withRange(kTlmm + kWlEnPin * 0x1000ull, 0x1000);
+    IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (memory) memory->release();
+    if (!map) return;
+    volatile uint32_t *pin = reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress());
+    native_wpss_wlen[0] = (pin[0] & 0xffff) | (pin[1] & 0xffff) << 16;
+    if (want) {
+        pin[1] = 2;            // the level first, so the pin goes high the moment it drives
+        pin[0] = 1u << 9;      // GPIO function, output, 2 mA, no pull
+        __asm__ volatile("dsb sy" ::: "memory");
+        IOSleep(50);
+    }
+    native_wpss_wlen[1] = (pin[0] & 0xffff) | (pin[1] & 0xffff) << 16;
+    native_wpss_wlen[2] = want | 0x100;
+    map->release();
+}
 bool start() {
+    wlanEnable();
     if (native_wpss_stats[3] > 0) {fail(StSmp2p, -114); return false;}  // running already (a bootloader started it): left alone
     if (!gHavePart) {fail(StPartition, -2); return false;}
     int rc = R::allocItem(gPart, kItemOut, QCOM_SMP2P_ITEM_BYTES);

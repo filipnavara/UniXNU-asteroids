@@ -35,6 +35,12 @@ new = ('\t{\n\t\tchar vendor[24];\n\t\tu32 id = ab->qmi.target.board_id;\n'
        '\t\tret = ath11k_core_fetch_board_data_api_1(ab, bd, vendor);\n\t}\n'
        '\tif (!ret) {\n\t\tbd_api = 1;\n\t\tgoto exit;\n\t}\n' + old)
 s = s.replace(old, new, 1)
+# WCN6750 without idle power save (IMPS): the vendor firmware (WLAN.MSL.3.0.1) asserted in whal_wmac_transition_to_fw_ctrl when the first
+# vdev woke the MAC from IMPS; icnss2 brackets that wake with a SMP2P wlan_soc_wake request this host does not make.
+start = s.index('.hw_rev = ATH11K_HW_WCN6750_HW10')
+at = s.index('.idle_ps = true,', start)
+assert at - start < 4000, "core.c wcn6750 idle_ps mark"
+s = s[:at] + '.idle_ps = false,' + s[at + len('.idle_ps = true,'):]
 open(dst, 'w').write(s)
 PY
 grep -q 'bdwlan.b%02x' $O/core.c || { echo "core.c patch missed" >&2; exit 1; }

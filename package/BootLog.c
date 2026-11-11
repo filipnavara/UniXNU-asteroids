@@ -164,6 +164,8 @@ extern volatile int32_t native_wpss_stats[16] __attribute__((weak_import));
 extern char native_wpss_text[96] __attribute__((weak_import));
 extern char native_wpss_services[160] __attribute__((weak_import));
 extern char native_wpss_files[256] __attribute__((weak_import));
+extern volatile uint32_t native_wpss_wlen[4] __attribute__((weak_import));
+extern char native_wpss_crash[224] __attribute__((weak_import));
 extern volatile int32_t native_wlan_stats[16] __attribute__((weak_import));
 extern char native_wlan_bss[224] __attribute__((weak_import));
 extern char *native_wlan_lines __attribute__((weak_import));
@@ -1228,6 +1230,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, row, sizeof row);
     if (&native_wpss_text && native_wpss_text[0]) {
       snprintf(row, sizeof row, "[wpss] %.95s", native_wpss_text);
+      at = put(out, at, cap, row, sizeof row);
+    }
+    if (&native_wpss_crash && native_wpss_crash[0]) {
+      char crash[248];
+      snprintf(crash, sizeof crash, "[wpss] crash %.223s", native_wpss_crash);
+      at = put(out, at, cap, crash, sizeof crash);
+    }
+    if (&native_wpss_wlen && native_wpss_wlen[2]) {
+      snprintf(row, sizeof row, "[wpss] wl_en gpio44 cfg/io before %08x after %08x driven=%u", native_wpss_wlen[0], native_wpss_wlen[1],
+               native_wpss_wlen[2] & 0xff);
       at = put(out, at, cap, row, sizeof row);
     }
     if (&native_wpss_files && native_wpss_files[0]) {
