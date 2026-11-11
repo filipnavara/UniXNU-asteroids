@@ -202,9 +202,17 @@ void arenaFree(void *p) {
 }
 
 // ---- the SMMU: the WLAN streams in pass-through (the bypass bank the storage, touch and audio streams share) ----
-uint32_t smmuRd(void *ctx, unsigned o) {return *reinterpret_cast<volatile uint32_t *>(reinterpret_cast<uintptr_t>(ctx) + o);}
+// The hypervisor (Gunyah) traps this SMMU's registers and emulates each access from the exception syndrome, which carries the
+// register and size only for a plain load or store: a load with writeback (the compiler made findSlot's scan "ldr w9, [x8], #4")
+// has no valid syndrome, and Gunyah answered it with an SError ("Unhandled implementation specific error": wifi42-44, 49, 50, each
+// time in such a loop). So every access is one plain LDR/STR, as Linux's readl/writel.
+uint32_t smmuRd(void *ctx, unsigned o) {
+    uint32_t v;
+    __asm__ volatile("ldr %w0, [%1]" : "=r"(v) : "r"(reinterpret_cast<uintptr_t>(ctx) + o) : "memory");
+    return v;
+}
 void smmuWr(void *ctx, unsigned o, uint32_t v) {
-    *reinterpret_cast<volatile uint32_t *>(reinterpret_cast<uintptr_t>(ctx) + o) = v;
+    __asm__ volatile("str %w0, [%1]" : : "r"(v), "r"(reinterpret_cast<uintptr_t>(ctx) + o) : "memory");
     __asm__ volatile("dsb sy" ::: "memory");
 }
 // What maps each WLAN stream (every stream-match group that covers it) and the state of its context bank, for the log; the banks seen
