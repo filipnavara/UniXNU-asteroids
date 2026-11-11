@@ -129,8 +129,9 @@ open(dst, 'w').write(s)
 PY
 grep -q 'nw_wifi_mhi_pa = resp.mhi_addr' $O/qmi.c || { echo "qmi.c device info patch missed" >&2; exit 1; }
 # icnss2 tells the firmware where the host's DMA memory is: the host capability's ddr_range (TLV 0x1F, three {start, size}; icnss2:
-# the WLAN IOVA window, then the MSA region). ath11k sends none. The board fills nw_wifi_ddr_range (its DMA window as the chip addresses
-# it, the MSA region) before the module starts; the copy of qmi.c adds the TLV when the first range is set. NW_DDR_RANGE=0 leaves it out.
+# the WLAN IOVA window, which also holds the MSI doorbell it maps, then the MSA region). ath11k sends none; with ranges the firmware
+# rejects chip writes outside them (ccpm_pcie.c invalid PCIe write access). The board fills nw_wifi_ddr_range (its DMA window as the chip
+# addresses it, the MSA region, the MSI doorbell's page) before the module starts; the copy of qmi.c adds the TLV when the first range is set. NW_DDR_RANGE=0 leaves it out.
 if [ "${NW_DDR_RANGE:-1}" != 0 ]; then
 python3 - "$O/qmi.c" <<'PY'
 import sys
@@ -141,7 +142,7 @@ assert s.count(fn) == 1, "qmi.c host cap mark"
 decl = '/* clang stack usage explodes if this is inlined */\nstatic noinline_for_stack\n' + fn
 assert s.count(decl) == 1, "qmi.c host cap declaration mark"
 helper = """/* Ath11kWifi: the host capability with icnss2's ddr_range (cnss_utils wlfw_host_cap_req_msg_v01, TLV 0x1F). */
-extern u64 nw_wifi_ddr_range[4];
+extern u64 nw_wifi_ddr_range[6];
 struct nw_ddr_range { u64 start; u64 size; };
 struct nw_host_cap_req {
 \tstruct qmi_wlanfw_host_cap_req_msg_v01 base;
@@ -183,10 +184,11 @@ body = s[start:end]
 for a, b in (('\tstruct qmi_wlanfw_host_cap_req_msg_v01 req;\n',
               '\tstruct nw_host_cap_req nw_req = {};\n#define req nw_req.base\n'),
              ('\tret = qmi_txn_init(&ab->qmi.handle, &txn,\n\t\t\t   qmi_wlanfw_host_cap_resp_msg_v01_ei, &resp);\n',
-              '\tif (nw_wifi_ddr_range[1]) {\n\t\tint i;\n\n\t\tnw_req.ddr_range_valid = 1;\n\t\tfor (i = 0; i < 2; i++) {\n'
+              '\tif (nw_wifi_ddr_range[1]) {\n\t\tint i;\n\n\t\tnw_req.ddr_range_valid = 1;\n\t\tfor (i = 0; i < 3; i++) {\n'
               '\t\t\tnw_req.ddr_range[i].start = nw_wifi_ddr_range[2 * i];\n\t\t\tnw_req.ddr_range[i].size = nw_wifi_ddr_range[2 * i + 1];\n\t\t}\n'
-              '\t\tath11k_info(ab, "host cap ddr range %llx+%llx, %llx+%llx\\n", nw_wifi_ddr_range[0], nw_wifi_ddr_range[1],\n'
-              '\t\t\t    nw_wifi_ddr_range[2], nw_wifi_ddr_range[3]);\n\t}\n\n'
+              '\t\tath11k_info(ab, "host cap ddr range %llx+%llx, %llx+%llx, %llx+%llx\\n", nw_wifi_ddr_range[0],\n'
+              '\t\t\t    nw_wifi_ddr_range[1], nw_wifi_ddr_range[2], nw_wifi_ddr_range[3], nw_wifi_ddr_range[4],\n'
+              '\t\t\t    nw_wifi_ddr_range[5]);\n\t}\n\n'
               '\tret = qmi_txn_init(&ab->qmi.handle, &txn,\n\t\t\t   qmi_wlanfw_host_cap_resp_msg_v01_ei, &resp);\n'),
              ('\t\t\t       QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN,\n\t\t\t       qmi_wlanfw_host_cap_req_msg_v01_ei, &req);\n',
               '\t\t\t       QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN + 3 + 3 * 16,\n\t\t\t       nw_host_cap_ei(), &nw_req);\n')):

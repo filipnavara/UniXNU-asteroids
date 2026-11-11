@@ -43,7 +43,7 @@ extern "C" int32_t asteroids_wpss_soc_wake_in(void);
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
-extern "C" volatile uint64_t nw_wifi_ddr_range[4];  // the module's: the DMA memory the firmware is told about (QMI host capability)
+extern "C" volatile uint64_t nw_wifi_ddr_range[6];  // the module's: the DMA memory the firmware is told about (QMI host capability)
 extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
 extern "C" volatile int32_t native_wpss_stats[16];
 extern "C" volatile uint32_t nw_wifi_cpr_mv;  // the module's: the CX voltage the firmware asked for (QMI capability reply)
@@ -861,13 +861,15 @@ void wifiThread(void *, wait_result_t) {
     logf(6, "wifi: DMA window %llx + %u MiB, write-combined (%s)", gArena.pa, dmaMiB, gArena.memory ? "XNU memory" : "below 4 GiB");
     if (!setupSmmu()) {fail(StSmmu, native_wlan_stats[9]); return;}
     stage(StSmmu);
-    // icnss2's host capability ddr_range: the DMA window as the chip addresses it, then the WLAN MSA region (stock devicetree
-    // wlan_msa_region@a6400000, 12 MiB). wifi-ddr=0 sends none.
+    // icnss2's host capability ddr_range: the DMA window as the chip addresses it, the WLAN MSA region (stock devicetree
+    // wlan_msa_region@a6400000, 12 MiB) and the MSI doorbell's page (icnss2 maps it into its IOVA window; with ranges the firmware
+    // rejects chip writes outside them). wifi-ddr=0 sends none.
     unsigned ddr = 1;
     PE_parse_boot_argn("wifi-ddr", &ddr, sizeof ddr);
     if (ddr) {
         nw_wifi_ddr_range[0] = gArena.iova; nw_wifi_ddr_range[1] = gArena.bytes;
         nw_wifi_ddr_range[2] = 0xa6400000; nw_wifi_ddr_range[3] = 0xc00000;
+        nw_wifi_ddr_range[4] = kMsiAddr & ~0xfffull; nw_wifi_ddr_range[5] = 0x1000;
     }
     stage(StDma);
     unsigned supplies = 1;

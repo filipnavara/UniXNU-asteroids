@@ -88,6 +88,6 @@ u32 nw_wifi_cpr_mv;
  * awake at +4. The board reads them around its SoC wake handshake. */
 u64 nw_wifi_mhi_pa;
 /* The host's DMA memory as the firmware is told it (QMI host capability ddr_range, icnss2's): start, size of the board's DMA
- * window as the chip addresses it, then the MSA region. Set by the board before the module starts; 0 sends none. */
-u64 nw_wifi_ddr_range[4];
+ * window as the chip addresses it, the MSA region, the MSI doorbell's page. Set by the board before the module starts; 0 sends none. */
+u64 nw_wifi_ddr_range[6];
 u32 nw_wifi_mhi_size;
