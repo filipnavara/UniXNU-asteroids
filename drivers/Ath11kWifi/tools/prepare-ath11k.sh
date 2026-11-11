@@ -19,4 +19,23 @@ grep -q 'DP_RXDMA_BUF_RING_SIZE.*1024' $O/dp.h || { echo "dp.h patch missed" >&2
 # Sending a command is the condition of the wait in ath11k_wmi_cmd_send: that wait must evaluate it once per round and never after it has succeeded.
 rm -f $O/wmi.c; sed '/^int ath11k_wmi_cmd_send(/,/^}/ s/wait_event_timeout(/wait_event_timeout_once(/' $A/wmi.c > $O/wmi.c
 grep -q 'wait_event_timeout_once' $O/wmi.c || { echo "wmi.c patch missed" >&2; exit 1; }
+
+# The vendor's board data files are named by the board id the firmware reports (icnss2: bdwlan.bNN, three hex digits from 0x100 on);
+# the copy of core.c asks for that name before board.bin.
+rm -f $O/core.c
+python3 - "$A/core.c" "$O/core.c" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+old = '\tret = ath11k_core_fetch_board_data_api_1(ab, bd, ATH11K_DEFAULT_BOARD_FILE);\n'
+assert s.count(old) == 1, "core.c board.bin mark"
+new = ('\t{\n\t\tchar vendor[24];\n\t\tu32 id = ab->qmi.target.board_id;\n'
+       '\t\tsnprintf(vendor, sizeof(vendor), id < 0x100 ? "bdwlan.b%02x" : "bdwlan.b%03x", id);\n'
+       '\t\tath11k_info(ab, "board id %x: trying %s\\n", id, vendor);\n'
+       '\t\tret = ath11k_core_fetch_board_data_api_1(ab, bd, vendor);\n\t}\n'
+       '\tif (!ret) {\n\t\tbd_api = 1;\n\t\tgoto exit;\n\t}\n' + old)
+s = s.replace(old, new, 1)
+open(dst, 'w').write(s)
+PY
+grep -q 'bdwlan.b%02x' $O/core.c || { echo "core.c patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"

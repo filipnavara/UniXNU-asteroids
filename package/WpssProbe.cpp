@@ -277,33 +277,42 @@ void service() {
 
 // What the firmware partition holds for the WiFi processor, for the log: the WPSS, board data and regulatory names in image/ (and the
 // subdirectories there), then everything in image/qca6750/.
-bool wanted(const char *t, size_t n) {
-    static const char *const keys[] = {"WPSS", "BDW", "REGDB", "WLAN", "QCA", "WCN"};
-    if (n && t[n - 1] == '/') return true;
-    for (const char *k : keys)
-        for (size_t i = 0; i + strlen(k) <= n; ++i) if (!strncmp(t + i, k, strlen(k))) return true;
+bool has(const char *t, size_t n, const char *k) {
+    for (size_t i = 0; i + strlen(k) <= n; ++i) {
+        size_t j = 0;
+        while (k[j] && (t[i + j] | 0x20) == (k[j] | 0x20)) ++j;
+        if (!k[j]) return true;
+    }
     return false;
+}
+// image/: directories and the WLAN names; image/qca6750/: everything but the WPSS image's own segments (wpss.bNN).
+bool wanted(const char *t, size_t n) {
+    static const char *const keys[] = {"wpss", "bdw", "regdb", "wlan", "qca", "wcn"};
+    if (n && t[n - 1] == '/') return true;
+    for (const char *k : keys) if (has(t, n, k)) return true;
+    return false;
+}
+void appendNames(const char *all, bool (*keep)(const char *, size_t)) {
+    for (const char *t = all; *t;) {
+        size_t n = 0;
+        while (t[n] && t[n] != ' ') ++n;
+        if (keep(t, n) && strlen(native_wpss_files) + n + 2 < sizeof native_wpss_files) {
+            if (native_wpss_files[0]) strlcat(native_wpss_files, " ", sizeof native_wpss_files);
+            strncat(native_wpss_files, t, n);
+        }
+        t += n;
+        while (*t == ' ') ++t;
+    }
 }
 void listFirmware() {
     constexpr size_t kList = 4096;
     char *all = static_cast<char *>(IOMallocData(kList));
     if (!all) return;
     native_wpss_files[0] = 0;
-    if (!asteroids_modem_list("image", all, kList)) {
-        for (const char *t = all; *t;) {
-            size_t n = 0;
-            while (t[n] && t[n] != ' ') ++n;
-            if (wanted(t, n) && strlen(native_wpss_files) + n + 2 < sizeof native_wpss_files) {
-                if (native_wpss_files[0]) strlcat(native_wpss_files, " ", sizeof native_wpss_files);
-                strncat(native_wpss_files, t, n);
-            }
-            t += n;
-            while (*t == ' ') ++t;
-        }
-    }
+    if (!asteroids_modem_list("image", all, kList)) appendNames(all, wanted);
     if (!asteroids_modem_list("image/qca6750", all, kList)) {
-        strlcat(native_wpss_files, " | qca6750: ", sizeof native_wpss_files);
-        strlcat(native_wpss_files, all, sizeof native_wpss_files);
+        strlcat(native_wpss_files, " | qca6750:", sizeof native_wpss_files);
+        appendNames(all, [](const char *t, size_t n) {return !(n == 8 && has(t, n, "wpss.b"));});
     }
     IOFreeData(all, kList);
 }

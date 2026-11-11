@@ -224,7 +224,8 @@ int fat_read(FatVolume *v, const FatFile *file, uint64_t offset, void *to, size_
     return FatOk;
 }
 
-/* asteroids: the short (8.3) names in a directory, space separated, directories with a trailing '/', as many as fit in out. */
+/* asteroids: the names in a directory (long names where present, else 8.3), space separated, directories with a trailing '/', as
+ * many as fit in out. */
 int fat_list(FatVolume *v, const char *path, char *out, size_t cap)
 {
     FatFile dir;
@@ -240,6 +241,8 @@ int fat_list(FatVolume *v, const char *path, char *out, size_t cap)
     uint64_t at = fixed && !v->fat32 ? v->root_offset : 0;
     uint64_t left = fixed && !v->fat32 ? (uint64_t)v->root_entries * 32 : 0;
     size_t used = 0;
+    LongName l;
+    l.valid = 0;
     for (uint32_t walked = 0;;) {
         if (!(fixed && !v->fat32)) {
             if (!valid(v, cluster) || walked++ > v->clusters) return FatDamaged;
@@ -252,11 +255,20 @@ int fat_list(FatVolume *v, const char *path, char *out, size_t cap)
             for (size_t e = 0; e + 32 <= n; e += 32) {
                 const uint8_t *d = chunk + e;
                 if (!d[0]) return FatOk;
-                if (d[0] == 0xe5 || (d[11] & 0x3f) == 0x0f || (d[11] & 0x08) || d[0] == '.') continue;
-                char name[14];
+                if (d[0] == 0xe5) {l.valid = 0; continue;}
+                if ((d[11] & 0x3f) == 0x0f) {long_part(&l, d); continue;}
+                const int named = l.valid && l.next == 1 && short_sum(d) == l.sum;
+                l.valid = 0;
+                if ((d[11] & 0x08) || d[0] == '.') continue;
+                char name[64];
                 size_t k = 0;
-                for (unsigned i = 0; i < 8 && d[i] != ' '; ++i) name[k++] = (char)d[i];
-                if (d[8] != ' ') {name[k++] = '.'; for (unsigned i = 8; i < 11 && d[i] != ' '; ++i) name[k++] = (char)d[i];}
+                if (named) {
+                    for (size_t i = 0; i < (size_t)l.count * 13 && l.text[i] && k < sizeof name - 2; ++i)
+                        name[k++] = l.text[i] < 0x80 ? (char)l.text[i] : '?';
+                } else {
+                    for (unsigned i = 0; i < 8 && d[i] != ' '; ++i) name[k++] = (char)d[i];
+                    if (d[8] != ' ') {name[k++] = '.'; for (unsigned i = 8; i < 11 && d[i] != ' '; ++i) name[k++] = (char)d[i];}
+                }
                 if (d[11] & 0x10) name[k++] = '/';
                 if (used + k + 2 > cap) return FatOk;
                 if (used) out[used++] = ' ';

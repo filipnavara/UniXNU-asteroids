@@ -70,12 +70,13 @@ int nw_wifi_start(const struct lx_platform *p, const struct nw_board *b) {
   lx_plat = p; nw_board = b; ath11k_debug_mask = 0; /* Keep info/warnings and counters; skip HTT/WMI debug formatting in normal traffic. */
   nw_wifi_buffer_pool_configure(1024 * 1024);
   lx_root_init(); nw_qrtr_init();
-  int r = nw_mainline_init(); if (r) goto fail;
-  r = lx_init_cfg80211_init(); if (r) goto fail;
+  int r = nw_mainline_init(); if (r) { lx_log(3, "wifi: mainline init failed"); goto fail; }
+  r = lx_init_cfg80211_init(); if (r) { lx_log(3, "wifi: cfg80211 init failed"); goto fail; }
   cfg_started = true;
-  r = lx_init_ieee80211_init(); if (r) goto fail;
+  r = lx_init_ieee80211_init(); if (r) { lx_log(3, "wifi: mac80211 init failed"); goto fail; }
   mac_started = true;
   nw_wifi_stats.stage = 1;
+  lx_log(6, "wifi: probing ath11k_ahb");
   r = lx_register_ath11k_ahb_driver();
   if (r) goto fail;
   ahb_started = true; nw_wifi_stats.stage = 2; return 0;

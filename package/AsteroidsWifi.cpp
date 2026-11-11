@@ -24,6 +24,7 @@
 #include <pexpert/pexpert.h>
 #include <stdarg.h>
 #include "nw_abi.h"
+#include "nw_control_endpoint.h"
 #include "SmmuBypass.h"
 
 extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
@@ -74,6 +75,7 @@ void pLog(int level, const char *line) {
     if (!first) first = now;
     const uint32_t i = __atomic_fetch_add(&native_wlan_lines_n, 1u, __ATOMIC_RELAXED) % kLines;
     snprintf(native_wlan_lines + i * kLineBytes, kLineBytes, "%u %d %.100s", static_cast<uint32_t>(now - first), level, line);
+    if (level <= 4) IOLog("wifi: %s\n", line);  // warnings and errors also in the kernel's message buffer
 }
 void logf(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void logf(int level, const char *fmt, ...) {
@@ -85,7 +87,7 @@ void logf(int level, const char *fmt, ...) {
     pLog(level, line);
 }
 
-// ---- the DMA window: one physically contiguous block, mapped uncached, handed out in pieces (sheng's allocator) ----
+// ---- the DMA window: one physically contiguous block, mapped write-combined, handed out in pieces (sheng's allocator) ----
 constexpr unsigned kArenaBlocks = 16384;
 struct Arena {uint8_t *va; uint64_t pa; size_t bytes; struct Block {uint32_t off, size; bool used;} *blocks; unsigned count; size_t used, peak; unsigned failures;
               IOBufferMemoryDescriptor *memory; IOMemoryMap *map;} gArena;
@@ -96,9 +98,11 @@ bool arenaInit(size_t bytes) {
                                                                      0x0000000ffffff000ull);
     if (!gArena.memory || gArena.memory->prepare() != kIOReturnSuccess) return false;
     gArena.pa = gArena.memory->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
-    // A second, uncached mapping of the same pages: the chip's view and the CPU's then agree without cache maintenance.
+    // A second, non-cacheable mapping of the same pages: the chip's view and the CPU's then agree without cache maintenance. Write-combined,
+    // not kIOMapInhibitCache: on xnu-12377 that is Device memory, where bzero's wide and DC ZVA stores take alignment faults (the first
+    // boot panicked in bzero of this window); the board's zzzzzzzzza patch keeps write-combined DRAM mappings Normal non-cacheable.
     IODeviceMemory *device = IODeviceMemory::withRange(gArena.pa, bytes);
-    gArena.map = device ? device->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    gArena.map = device ? device->map(kIOMapAnywhere | kIOMapWriteCombineCache) : nullptr;
     if (device) device->release();
     if (!gArena.map) return false;
     gArena.va = reinterpret_cast<uint8_t *>(gArena.map->getVirtualAddress());
@@ -169,12 +173,55 @@ void smmuWr(void *ctx, unsigned o, uint32_t v) {
     *reinterpret_cast<volatile uint32_t *>(reinterpret_cast<uintptr_t>(ctx) + o) = v;
     __asm__ volatile("dsb sy" ::: "memory");
 }
+// What maps each WLAN stream (every stream-match group that covers it) and the state of its context bank, for the log; the banks seen
+// are kept for faultReport().
+IOMemoryMap *gSmmuMap;
+uint32_t gBanks[4], gBankCount, gPages;
+void describeStreams(const struct smmu_io &io, const char *when) {
+    const uint32_t idr0 = smmuRd(io.ctx, 0x20), idr1 = smmuRd(io.ctx, 0x24);
+    unsigned count = idr0 & 255;
+    if (count > 128) count = 128;
+    gPages = 1u << (((idr1 >> 28) & 7) + 1);
+    for (uint16_t stream : kStreams) {
+        for (unsigned i = 0; i < count; ++i) {
+            const uint32_t smr = smmuRd(io.ctx, 0x800 + 4 * i);
+            if (!(smr & 0x80000000u)) continue;
+            const uint32_t mask = (smr >> 16) & 0x7fff;
+            if (((smr ^ stream) & 0xffff & ~mask) != 0) continue;
+            const uint32_t s2cr = smmuRd(io.ctx, 0xc00 + 4 * i), bank = s2cr & 255, type = (s2cr >> 16) & 3;
+            const unsigned cb = (gPages + bank) * 4096u;
+            logf(6, "wifi: smmu %s: stream %x smr[%u]=%08x s2cr=%08x bank %u sctlr=%08x cbar=%08x cba2r=%08x ttbr0=%08x%08x", when, stream, i,
+                 smr, s2cr, bank, type ? 0 : smmuRd(io.ctx, cb), smmuRd(io.ctx, 0x1000 + 4 * bank), smmuRd(io.ctx, 0x1800 + 4 * bank),
+                 type ? 0 : smmuRd(io.ctx, cb + 0x24), type ? 0 : smmuRd(io.ctx, cb + 0x20));
+            bool known = false;
+            for (unsigned k = 0; k < gBankCount; ++k) known |= gBanks[k] == bank;
+            if (!type && !known && gBankCount < 4) gBanks[gBankCount++] = bank;
+        }
+    }
+}
+// SMMU faults: the global fault status and each WLAN bank's fault status, address and syndrome, when they change.
+void faultReport() {
+    if (!gSmmuMap) return;
+    void *ctx = reinterpret_cast<void *>(gSmmuMap->getVirtualAddress());
+    static uint32_t last[5];
+    const uint32_t gfsr = smmuRd(ctx, 0x48);
+    if (gfsr != last[4]) {last[4] = gfsr; if (gfsr) logf(3, "wifi: smmu gfsr=%08x gfsynr0=%08x gfsynr1=%08x", gfsr, smmuRd(ctx, 0x50), smmuRd(ctx, 0x54));}
+    for (unsigned k = 0; k < gBankCount; ++k) {
+        const unsigned cb = (gPages + gBanks[k]) * 4096u;
+        const uint32_t fsr = smmuRd(ctx, cb + 0x58);
+        if (fsr == last[k]) continue;
+        last[k] = fsr;
+        if (fsr) logf(3, "wifi: smmu bank %u fsr=%08x far=%08x%08x fsynr0=%08x fsynr1=%08x", gBanks[k], fsr, smmuRd(ctx, cb + 0x64),
+                      smmuRd(ctx, cb + 0x60), smmuRd(ctx, cb + 0x68), smmuRd(ctx, cb + 0x6c));
+    }
+}
 bool setupSmmu() {
     IODeviceMemory *memory = IODeviceMemory::withRange(kSmmu, kSmmuBytes);
     IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
     if (memory) memory->release();
     if (!map) return false;
     struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
+    describeStreams(io, "before");
     int32_t result = 0;
     for (unsigned i = 0; i < 2; ++i) {
         struct smmu_plan plan = smmu_plan_bypass(&io, kStreams[i], gArena.pa, gArena.bytes);
@@ -183,7 +230,8 @@ bool setupSmmu() {
         else logf(3, "wifi: SMMU stream %x: %s", kStreams[i], e);
     }
     native_wlan_stats[9] = result;
-    map->release();  // the routing stays; the registers are not needed again
+    describeStreams(io, "after");
+    gSmmuMap = map;  // kept for the fault reports
     return (result & 1) != 0;
 }
 
@@ -304,8 +352,8 @@ bool boardMac(uint8_t m[6]) {
     return true;
 }
 
-// Firmware files by name, each read once and kept for the boot. ath11k asks for board-2.bin, then board.bin, and regdb.bin; the 3a's
-// own board data is the vendor's ELF in the firmware partition (ath11k sends an ELF as such). wifi-bdf=PATH names the board data file in
+// Firmware files by name, each read once and kept for the boot. ath11k asks for board-2.bin, then bdwlan.b<board id> (the vendor's name,
+// in image/qca6750/ of the firmware partition), board.bin and regdb.bin; ath11k sends an ELF as such. wifi-bdf=PATH names the board data file in
 // the firmware partition; an owner-installed file below /private/var/firmware/ath11k/WCN6750/hw1.0 wins over both.
 struct FwCache {char name[24]; uint8_t *data; size_t size; bool tried;} gFw[8];
 int readVfs(const char *name, uint8_t **data, size_t *size);
@@ -330,9 +378,12 @@ int pFwGet(const char *path, const uint8_t **data, size_t *size) {
         if (error) {
             char chosen[64] = "";
             const char *candidates[4] = {nullptr, nullptr, nullptr, nullptr};
-            if (!strcmp(base, "board.bin")) {
+            static char vendor[48];
+            if (!strncmp(base, "bdwlan.", 7)) {  // the vendor's board data by board id (the module's copy of core.c asks for it first)
                 if (PE_parse_boot_argn("wifi-bdf", chosen, sizeof chosen) && chosen[0]) candidates[0] = chosen;
-                else {candidates[0] = "image/qca6750/bdwlan.elf"; candidates[1] = "image/bdwlan.elf"; candidates[2] = "image/qca6750/bdwlan.bin";}
+                else {snprintf(vendor, sizeof vendor, "image/qca6750/%s", base); candidates[0] = vendor;}
+            } else if (!strcmp(base, "board.bin")) {
+                candidates[0] = "image/qca6750/bdwlan.elf"; candidates[1] = "image/qca6750/bdwlan.bin"; candidates[2] = "image/bdwlan.elf";
             } else if (!strcmp(base, "regdb.bin")) {
                 candidates[0] = "image/qca6750/regdb.bin"; candidates[1] = "image/regdb.bin";
             }
@@ -372,6 +423,11 @@ int pRprocUp(unsigned waitMs) {
     return 1;
 }
 int pSmp2pWlan(uint32_t mask, uint32_t value) {return asteroids_wpss_smp2p_wlan(mask, value);}
+
+// ---- the native control endpoint (org.unixnu.wifi.control): cfg80211's start binds to it. No socket yet (no wpa_supplicant on this
+// board), so no session ever opens; sheng's WifiProbe.cpp registers the kernel control socket here.
+int controlSend(void *, uint64_t, const void *, size_t) {return NW_CONTROL_SEND_CLOSED;}
+void controlWake(void *) {wakeWorker();}
 
 // ---- the self-test scan: the networks the radio hears go to the log ----
 volatile int gScanDone;
@@ -415,7 +471,7 @@ void wifiThread(void *, wait_result_t) {
     PE_parse_boot_argn("wifi-dma", &dmaMiB, sizeof dmaMiB);
     if (dmaMiB < 8 || dmaMiB > 256) dmaMiB = 48;
     if (!arenaInit((size_t)dmaMiB << 20)) {fail(StDma, -12); return;}
-    logf(6, "wifi: DMA window %llx + %u MiB, uncached", gArena.pa, dmaMiB);
+    logf(6, "wifi: DMA window %llx + %u MiB, write-combined", gArena.pa, dmaMiB);
     if (!setupSmmu()) {fail(StSmmu, native_wlan_stats[9]); return;}
     stage(StSmmu);
     stage(StDma);
@@ -441,6 +497,9 @@ void wifiThread(void *, wait_result_t) {
     board.smp2p_wlan = pSmp2pWlan;
     static const struct nw_wifi_events events = {scanDone, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     nw_wifi_set_events(&events);
+    static const struct nw_control_transport transport = {nullptr, controlSend, controlWake};
+    const int control = nw_wifi_control_transport_set(&transport);
+    if (control) logf(3, "wifi: control transport refused: %d", control);
     const int r = nw_wifi_start(&plat, &board);
     native_wlan_stats[14] = r;
     if (r) {fail(StStarted, r); return;}
@@ -451,7 +510,9 @@ void wifiThread(void *, wait_result_t) {
     PE_parse_boot_argn("wifi-scan", &selfScan, sizeof selfScan);
     bool powered = false, scanAsked = false;
     uint64_t scanAt = 0;
+    uint64_t nextFaults = 0;
     for (uint64_t n = 0;; ++n) {
+        if (pNow() >= nextFaults) {nextFaults = pNow() + 500; faultReport();}
         const int busy = nw_wifi_step();
         if (!powered && nw_wifi_stats.stage >= 4) {
             powered = true;
