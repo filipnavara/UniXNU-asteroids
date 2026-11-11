@@ -918,6 +918,9 @@ void wifiThread(void *, wait_result_t) {
     bool powered = false, scanAsked = false;
     uint64_t scanAt = 0, nextStageAt = 0;
     unsigned scanStage = 0;
+    unsigned fwdLeft = 0;
+    uint64_t fwdAt = 0;
+    bool fwdEarly = false;
     uint64_t nextFaults = 0;
     for (uint64_t n = 0;; ++n) {
         if (pNow() >= nextFaults) {nextFaults = pNow() + 500; faultReport();}
@@ -956,6 +959,15 @@ void wifiThread(void *, wait_result_t) {
             wpssDead = true;
             logf(3, "wifi: WPSS fatal (slave %x), scan stage %u", native_wpss_stats[3], scanStage);
             nw_wifi_rx_buf_probe(1);
+            fwdLeft = 240; fwdAt = pNow();
+        }
+        // The firmware's last diag records after it died (and once 15 s after radio on, to see what a healthy stretch logs): 80 a
+        // round, oldest first, a round every 2.5 s (the log takes 100 lines a slot).
+        if (powered && !fwdEarly && pNow() >= scanAt + 13000 - 2000 && !wpssDead) {fwdEarly = true; nw_fw_diag_dump(0, 60);}
+        if (fwdLeft && pNow() >= fwdAt) {
+            fwdLeft -= 80;
+            nw_fw_diag_dump(fwdLeft, 80);
+            fwdAt = pNow() + 2500;
         }
         // wifi-scan=2: the scan in three parts (2.4 GHz, 5 GHz without radar detection, 5 GHz radar channels), 3 s apart, to see which
         // the firmware does not survive.

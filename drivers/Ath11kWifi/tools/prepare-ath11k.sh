@@ -11,7 +11,10 @@ for f in spectral_common.h testmode_i.h; do ln -sf $L/drivers/net/wireless/ath/$
 rm -f $O/trace.h
 { echo '#ifndef LX_ATH11K_TRACE_H'; echo '#define LX_ATH11K_TRACE_H'
   grep -ohE "trace_ath11k_[a-z_0-9]+" $A/*.c $A/*.h | sort -u | while read t; do
-    case $t in *_enabled) echo "#define $t() 0";; *) echo "#define $t(...) ((void)0)";; esac; done
+    case $t in *_enabled) echo "#define $t() 0";;
+      # The firmware's diag messages (WMI_DIAG_EVENTID, on with the QMI ini's enablefwlog): kept by src/nw_debug.c for the board's log.
+      trace_ath11k_wmi_diag) echo "void nw_fw_diag(const void *data, unsigned long len);"; echo "#define $t(ab, d, n) nw_fw_diag(d, n)";;
+      *) echo "#define $t(...) ((void)0)";; esac; done
   echo '#endif'; } > $O/trace.h
 # The receive refill ring keeps Linux's 4096 buffers: with 1024 (Ath12kWifi halves its WCN7850 ring to save DMA window) the WCN6750
 # firmware asserted in whalRecvDmaLeakRecovery right after the first scan; its per-MAC rings take 2048 each from this one.

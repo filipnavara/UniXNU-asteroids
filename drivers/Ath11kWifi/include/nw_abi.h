@@ -48,6 +48,7 @@ void nw_wifi_qrtr_down(void);
 int nw_wifi_self_scan(void);
 /* Ath11kWifi: the receive rings' fill state as text (wireless worker only). */
 void nw_wifi_rx_state(char *text, int size);
+void nw_fw_diag_dump(unsigned skip, unsigned count);  /* logs the firmware's last diag records (see src/nw_debug.c) */
 void nw_wifi_rx_buf_probe(int compare);  /* 0 remembers the posted receive buffers, 1 logs which the chip wrote since */
 struct nw_wifi_stats { uint32_t stage, scans, frames, beacons, bss_seen; int last_err; };
 /* Cumulative buffer counters; snapshots do not reset live ownership counts. */
