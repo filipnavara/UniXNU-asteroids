@@ -40,6 +40,15 @@ start = s.index('.hw_rev = ATH11K_HW_WCN6750_HW10')
 at = s.index('.idle_ps = true,', start)
 assert at - start < 4000, "core.c wcn6750 idle_ps mark"
 s = s[:at] + '.idle_ps = false,' + s[at + len('.idle_ps = true,'):]
+# NW_RX_MAC_BUF_RING=0 (an experiment, not the default): the host refill ring as RXDMA's own buffer ring (HTT_RXDMA_HOST_BUF_RING, SW to HW)
+# instead of the mobile model (HTT_HOST1_TO_FW_RXBUF_RING, the firmware copies into per-MAC rings). With the mobile model the firmware
+# never takes a buffer from the refill ring and asserts in whalRecvDmaLeakRecovery after the first scan; with this one it stopped
+# answering WMI at the radio's start (no assert).
+import os
+if os.environ.get('NW_RX_MAC_BUF_RING', '1') == '0':
+    at = s.index('.rx_mac_buf_ring = true,', start)
+    assert at - start < 4000, "core.c wcn6750 rx_mac_buf_ring mark"
+    s = s[:at] + '.rx_mac_buf_ring = false,' + s[at + len('.rx_mac_buf_ring = true,'):]
 open(dst, 'w').write(s)
 PY
 grep -q 'bdwlan.b%02x' $O/core.c || { echo "core.c patch missed" >&2; exit 1; }
