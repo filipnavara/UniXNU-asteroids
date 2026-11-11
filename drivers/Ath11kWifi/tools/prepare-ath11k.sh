@@ -129,4 +129,71 @@ open(dst, 'w').write(s)
 PY
 grep -q 'nw_wifi_mhi_pa = resp.mhi_addr' $O/qmi.c || { echo "qmi.c device info patch missed" >&2; exit 1; }
 grep -q 'nw_wifi_cpr_mv = resp.voltage_mv' $O/qmi.c || { echo "qmi.c patch missed" >&2; exit 1; }
+# The vendor host follows the SRING_SETUPs with an HTT RX_RING_SELECTION_CFG for every per-MAC data ring (qca-wifi-host-cmn li/dp_li.c
+# dp_rxdma_ring_sel_cfg_li): which frames (FP only: control BA request, unicast and multicast data) and TLVs go to the ring, the buffer
+# size and where each TLV sits in a buffer (offsets valid). ath11k sends it for that ring only in monitor mode. With the WCN6750 vendor
+# firmware the host refill ring was never consumed; the copy of dp_rx.c sends the vendor's message (30 words, fw-api
+# htt_rx_ring_selection_cfg_t) after each rx_mac_buf ring's setup. NW_RX_RING_SEL=0 leaves it out.
+rm -f $O/dp_rx.c
+NW_RX_RING_SEL=${NW_RX_RING_SEL:-1} python3 - "$A/dp_rx.c" "$O/dp_rx.c" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+if os.environ["NW_RX_RING_SEL"] != "0":
+    fn = 'int ath11k_dp_rx_pdev_alloc(struct ath11k_base *ab, int mac_id)\n'
+    assert s.count(fn) == 1, "dp_rx.c pdev alloc mark"
+    helper = """/* Ath11kWifi: the vendor host's RX_RING_SELECTION_CFG for a per-MAC data ring (see tools/prepare-ath11k.sh). */
+#define NW_RX_SEL_WORDS 30
+static int nw_htt_rx_ring_sel(struct ath11k_base *ab, u32 ring_id, int mac_id)
+{
+\tstruct hal_srng_params params = {};
+\tstruct sk_buff *skb;
+\tu32 *w;
+\tint ret;
+
+\tskb = ath11k_htc_alloc_skb(ab, NW_RX_SEL_WORDS * 4);
+\tif (!skb)
+\t\treturn -ENOMEM;
+\tath11k_hal_srng_get_params(ab, &ab->hal.srng_list[ring_id], &params);
+\tskb_put(skb, NW_RX_SEL_WORDS * 4);
+\tw = (u32 *)skb->data;
+\tmemset(w, 0, NW_RX_SEL_WORDS * 4);
+\tw[0] = FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO0_MSG_TYPE, HTT_H2T_MSG_TYPE_RX_RING_SELECTION_CFG) |
+\t       FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO0_PDEV_ID, DP_SW2HW_MACID(mac_id)) |
+\t       FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO0_RING_ID, HTT_RXDMA_HOST_BUF_RING) |
+\t       FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO0_SS, !!(params.flags & HAL_SRNG_FLAGS_MSI_SWAP)) |
+\t       FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO0_PS, !!(params.flags & HAL_SRNG_FLAGS_DATA_TLV_SWAP)) |
+\t       BIT(26) /* rx_offsets_valid */;
+\tw[1] = FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO1_BUF_SIZE, DP_RX_BUFFER_SIZE);
+\tw[4] = BIT(24) /* FLAG2 FP CTRL 1000: block ack request */;
+\tw[5] = HTT_RX_FP_DATA_PKT_FILTER_TLV_FLASG3_MCAST | HTT_RX_FP_DATA_PKT_FILTER_TLV_FLASG3_UCAST;
+\tw[6] = HTT_RX_FILTER_TLV_FLAGS_MPDU_START | HTT_RX_FILTER_TLV_FLAGS_MSDU_START | HTT_RX_FILTER_TLV_FLAGS_RX_PACKET |
+\t       HTT_RX_FILTER_TLV_FLAGS_MSDU_END | HTT_RX_FILTER_TLV_FLAGS_MPDU_END | HTT_RX_FILTER_TLV_FLAGS_PACKET_HEADER |
+\t       HTT_RX_FILTER_TLV_FLAGS_ATTENTION;
+\t/* The WCN6750 buffer layout (struct hal_rx_desc_qcn9074, the vendor's RXDMA_OPTIMIZATION rx_pkt_tlvs), byte offsets of the TLVs
+\t * with their tags; the packet follows the descriptor. */
+#define NW_OFF(f) ((u32)offsetof(struct hal_rx_desc_qcn9074, f))
+\tw[7] = (u32)sizeof(struct hal_rx_desc_qcn9074) | NW_OFF(hdr_status_tag) << 16;
+\tw[8] = NW_OFF(mpdu_end_tag) | NW_OFF(mpdu_start_tag) << 16;
+\tw[9] = NW_OFF(msdu_end_tag) | NW_OFF(msdu_start_tag) << 16;
+\tw[10] = NW_OFF(rx_attn_tag);
+#undef NW_OFF
+\tath11k_info(ab, "rx ring sel mac %d ring %u: %08x %08x %08x %08x %08x %08x %08x %08x %08x\\n", mac_id, ring_id,
+\t\t    w[0], w[1], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
+\tret = ath11k_htc_send(&ab->htc, ab->dp.eid, skb);
+\tif (ret)
+\t\tdev_kfree_skb_any(skb);
+\treturn ret;
+}
+
+"""
+    s = s.replace(fn, helper + fn, 1)
+    old = ('\t\t\t\tath11k_warn(ab, "failed to configure rx_mac_buf_ring%d %d\\n",\n'
+           '\t\t\t\t\t    i, ret);\n\t\t\t\treturn ret;\n\t\t\t}\n')
+    assert s.count(old) == 1, "dp_rx.c rx_mac_buf_ring mark"
+    s = s.replace(old, old + '\t\t\tret = nw_htt_rx_ring_sel(ab, ring_id, mac_id + i);\n\t\t\tif (ret)\n'
+                  '\t\t\t\tath11k_warn(ab, "failed to send rx ring selection %d: %d\\n", i, ret);\n', 1)
+open(dst, 'w').write(s)
+PY
+[ "${NW_RX_RING_SEL:-1}" = 0 ] || grep -q 'nw_htt_rx_ring_sel(ab, ring_id' $O/dp_rx.c || { echo "dp_rx.c patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"
