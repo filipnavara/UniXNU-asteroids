@@ -80,6 +80,30 @@ void nw_wifi_rx_state(char *b, int n) {
            ring_count(ab, &dp->reo_dst_ring[3], 1), ring_count(ab, &dp->reo_except_ring, 1), ring_count(ab, &dp->rx_rel_ring, 1),
            ring_count(ab, &ar->dp.rxdma_err_dst_ring[0], 1)); }
 void nw_wifi_ring_state(char *b, int n) { if (n) b[0] = 0; }
+/* More of the firmware's own log (WMI_DBGLOG_CFG_CMDID, what ath11k's fw_dbglog debugfs file sends): the modules named below at the
+ * verbose level and every module enabled. The firmware sends its log in ~1.5 KB reports, so more of it also means the report before
+ * an assert is closer to the assert. Worker only, after the radio's pdev exists. */
+int nw_wifi_fw_log_verbose(void) {
+  if (!g_hw) return -ENODEV;
+  struct ath11k *ar = g_hw->priv;
+  static const u16 modules[] = { WLAN_MODULE_WAL, WLAN_MODULE_WHAL, WLAN_MODULE_RX, WLAN_MODULE_DATA_TXRX };
+  u32 bitmap[MAX_MODULE_ID_BITMAP_WORDS]; int ret = 0;
+  mutex_lock(&ar->conf_mutex);
+  for (unsigned i = 0; i < ARRAY_SIZE(modules) && !ret; i++) {
+    struct ath11k_fw_dbglog cfg = { .param = WMI_DEBUG_LOG_PARAM_LOG_LEVEL };
+    cfg.log_level = ATH11K_FW_DBGLOG_VERBOSE; cfg.module_id = modules[i];
+    memset(bitmap, 0, sizeof(bitmap));
+    ret = ath11k_wmi_fw_dbglog_cfg(ar, bitmap, &cfg);
+  }
+  if (!ret) {
+    struct ath11k_fw_dbglog cfg = { .param = WMI_DEBUG_LOG_PARAM_MOD_ENABLE_BITMAP, .value = MAX_MODULE_ID_BITMAP_WORDS };
+    memset(bitmap, 0xff, sizeof(bitmap));
+    ret = ath11k_wmi_fw_dbglog_cfg(ar, bitmap, &cfg);
+  }
+  mutex_unlock(&ar->conf_mutex);
+  lx_log(ret ? 3 : 6, "wifi: firmware log verbose for WAL, WHAL, RX, DATA_TXRX: %d", ret);
+  return ret;
+}
 /* Reads back what the host programmed through the register window (worker only): every initialized ring that lives in chip registers
  * (copy engines, TCL, REO, WBM; not the LMAC rings, which the firmware sets up) must show its ring base address in its first register.
  * Logs how many do not and the first few, then the WBM idle link descriptor ring (the list the chip's WBM hands receive DMA its link

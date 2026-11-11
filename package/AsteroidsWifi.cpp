@@ -262,15 +262,35 @@ int findSlot(void *ctx, uint16_t stream, unsigned count) {
     for (unsigned i = 0; i < count; ++i) if (smmuRd(ctx, 0x800 + 4 * i) == (0x80000000u | stream)) return (int)i;
     return -1;
 }
-bool setupTranslation(void *ctx) {
+uint64_t gMsiIova;  // the MSI doorbell as the chip addresses it, when the window is translated
+// ownBank false: the boot loader's bank of stream 0x1401 is reprogrammed (bank 70 here: SError, never use). ownBank true (wifi-iommu=2):
+// a context bank no stream-match group names and whose translation is off is taken instead, both WLAN streams are pointed at it, and
+// the layout is icnss2's: the DMA window at IOVA 0xb0000000 (qcom,iommu-dma-addr-pool), the MSI doorbell's block inside the same
+// window (icnss2 dma_map_resource()s it there), the WLAN MSA region one to one.
+bool setupTranslation(void *ctx, bool ownBank) {
     const uint32_t idr0 = smmuRd(ctx, 0x20), idr1 = smmuRd(ctx, 0x24);
     unsigned count = idr0 & 255;
     if (count > 128) count = 128;
     const unsigned pages = 1u << (((idr1 >> 28) & 7) + 1), banks = idr1 & 255;
     const int slot = findSlot(ctx, kStreams[1], count);
     if (slot < 0) {logf(3, "wifi: iommu: no stream-match group for %x", kStreams[1]); return false;}
-    const uint32_t s2cr = smmuRd(ctx, 0xc00 + 4 * slot), bank = s2cr & 255;
-    if ((s2cr >> 16) & 3 || bank >= banks) {logf(3, "wifi: iommu: stream %x is not in a translating bank (s2cr %08x)", kStreams[1], s2cr); return false;}
+    const uint32_t s2cr = smmuRd(ctx, 0xc00 + 4 * slot);
+    uint32_t bank = s2cr & 255;
+    if (!ownBank && ((s2cr >> 16) & 3 || bank >= banks)) {logf(3, "wifi: iommu: stream %x is not in a translating bank (s2cr %08x)", kStreams[1], s2cr); return false;}
+    if (ownBank) {
+        const uint32_t loaderBank = bank;
+        bank = ~0u;
+        for (unsigned b = banks; b-- > 0 && bank == ~0u;) {
+            if (b == loaderBank || (uint64_t)(pages + b + 1) * 4096u > kSmmuBytes) continue;
+            bool used = smmuRd(ctx, (pages + b) * 4096u) & 1;  // translating already
+            for (unsigned i = 0; i < count && !used; ++i)
+                used = (smmuRd(ctx, 0x800 + 4 * i) & 0x80000000u) && (smmuRd(ctx, 0xc00 + 4 * i) & 255) == b;
+            if (!used) bank = b;
+        }
+        if (bank == ~0u) {logf(3, "wifi: iommu: no free context bank"); return false;}
+        logf(6, "wifi: iommu: own bank %u of %u (cbar %08x, cba2r %x, sctlr %x)", bank, banks, smmuRd(ctx, 0x1000 + 4 * bank), smmuRd(ctx, 0x1800 + 4 * bank),
+             smmuRd(ctx, (pages + bank) * 4096u));
+    }
     if (gArena.bytes & 0x1fffff || gArena.pa & 0x1fffff || gArena.bytes > (64u << 20)) {logf(3, "wifi: iommu: window not 2 MiB aligned"); return false;}
     // Tables: page 0 the L1 table (4 entries for 4 GiB), page 1 the L2 table of 0x80000000-0xbfffffff, page 2 that of 0-0x3fffffff.
     gTables = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous,
@@ -289,11 +309,19 @@ bool setupTranslation(void *ctx) {
     t[0] = (tpa + 8192) | 3;   // L1 index 0: 0-0x3fffffff
     for (uint64_t off = 0; off < gArena.bytes; off += 0x200000)
         t[512 + ((kIovaBase - 0x80000000ull + off) >> 21)] = (gArena.pa + off) | kBlock;
-    t[1024 + (kMsiAddr >> 21)] = (kMsiAddr & ~0x1fffffull) | kBlock | 1ull << 2;
+    if (ownBank) {
+        constexpr uint64_t kMsiBlockIova = 0xbfe00000;  // the window's last 2 MiB
+        t[512 + ((kMsiBlockIova - 0x80000000ull) >> 21)] = (kMsiAddr & ~0x1fffffull) | kBlock | 1ull << 2;
+        gMsiIova = kMsiBlockIova | (kMsiAddr & 0x1fffff);
+        for (uint64_t pa = 0xa6400000; pa < 0xa7000000; pa += 0x200000) t[512 + ((pa - 0x80000000ull) >> 21)] = pa | kBlock;
+    } else {
+        t[1024 + (kMsiAddr >> 21)] = (kMsiAddr & ~0x1fffffull) | kBlock | 1ull << 2;
+    }
     __asm__ volatile("dsb sy" ::: "memory");
     const unsigned cb = (pages + bank) * 4096u;
     const uint32_t oldSctlr = smmuRd(ctx, cb);
     smmuWr(ctx, cb, 0);                                      // disable while the registers change
+    if (ownBank) smmuWr(ctx, 0x1000 + 4 * bank, 0x00010000); // CBAR: stage 1 with stage 2 bypass, as the pass-through bank has it
     smmuWr(ctx, 0x1800 + 4 * bank, 1);                       // CBA2R: AArch64 descriptors
     smmuWr(ctx, cb + 0x10, 2);                               // TCR2: 40-bit output
     smmuWr(ctx, cb + 0x38, 0x0444u);                         // MAIR0: 0 Normal NC, 1 Device nGnRE
@@ -306,7 +334,9 @@ bool setupTranslation(void *ctx) {
     smmuWr(ctx, cb + 0x7f0, 0);                              // TLBSYNC
     unsigned polls = 0;
     while ((smmuRd(ctx, cb + 0x7f4) & 1) && polls < 100000) ++polls;
-    smmuWr(ctx, cb, 0x61);                                   // M, fault report and interrupt, as the boot loader had it
+    smmuWr(ctx, cb, ownBank ? 0x21 : 0x61);                  // M and fault report (and the interrupt, as the boot loader had it)
+    if (ownBank) {smmuWr(ctx, 0xc00 + 4 * slot, bank); logf(6, "wifi: iommu: stream %x slot %d -> bank %u (s2cr %08x)", kStreams[1], slot, bank, smmuRd(ctx, 0xc00 + 4 * slot));}
+    if (gBankCount < 4) gBanks[gBankCount++] = bank;         // its faults in the fault report
     // 0x1400 into the same bank: its own group (made by an earlier run or now) or a free one, the context first, then the match.
     int other = findSlot(ctx, kStreams[0], count);
     if (other < 0) for (unsigned i = 0; i < count && other < 0; ++i) if (!(smmuRd(ctx, 0x800 + 4 * i) & 0x80000000u)) other = (int)i;
@@ -327,7 +357,7 @@ bool setupSmmu() {
         if (!map) return false;
         struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
         describeStreams(io, "before");
-        const bool ok = setupTranslation(io.ctx);
+        const bool ok = setupTranslation(io.ctx, translate == 2);
         describeStreams(io, "after");
         gSmmuMap = map;
         if (ok) return true;
@@ -895,6 +925,8 @@ void wifiThread(void *, wait_result_t) {
         if (ddr == 2) {nw_wifi_ddr_range[0] = 0; nw_wifi_ddr_range[1] = 0x100000000ull;}
         nw_wifi_ddr_range[2] = 0xa6400000; nw_wifi_ddr_range[3] = 0xc00000;
         nw_wifi_ddr_range[4] = kMsiAddr & ~0xfffull; nw_wifi_ddr_range[5] = 0x1000;
+        // The translated layout (wifi-iommu=2) is icnss2's: one IOVA window that holds the DMA memory and the MSI doorbell, then the MSA.
+        if (gMsiIova) {nw_wifi_ddr_range[0] = kIovaBase; nw_wifi_ddr_range[1] = 0x10000000; nw_wifi_ddr_range[4] = 0; nw_wifi_ddr_range[5] = 0;}
     }
     stage(StDma);
     unsigned supplies = 1;
@@ -917,7 +949,7 @@ void wifiThread(void *, wait_result_t) {
     static struct nw_board board;
     board.irq_base = kIrqBase;
     board.map_phys = pMapPhys;
-    board.msi_addr = kMsiAddr;
+    board.msi_addr = gMsiIova ? gMsiIova : kMsiAddr;
     board.msi_spi_first = kMsiSpi;
     board.msi_count = kMsiCount;
     board.qrtr_send = pQrtrSend;
@@ -970,6 +1002,10 @@ void wifiThread(void *, wait_result_t) {
                 if (ack < 0 && awake >= 2) {socWake(5); socWake(4);}
                 logSmp2p("after");
             }
+            // wifi-fwlog=1: the firmware's receive and MAC modules log verbosely (see nw_wifi_fw_log_verbose).
+            unsigned fwlog = 0;
+            PE_parse_boot_argn("wifi-fwlog", &fwlog, sizeof fwlog);
+            if (fwlog) nw_wifi_fw_log_verbose();
             powered = true;
             stage(StInterface);
             nw_wifi_power(1);
