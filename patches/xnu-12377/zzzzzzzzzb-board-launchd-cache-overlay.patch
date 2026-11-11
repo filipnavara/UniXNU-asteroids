@@ -1,0 +1,21 @@
+asteroids: the OS launchd cache from the GPU add-on's xpc/ (sheng's sheng-wifi-launchd-cache.patch without its Wi-Fi executable mount),
+so build-boot-runtime.py's merged cache with the board's job environment values (iconservicesagent: CoreImage on the CPU) applies.
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8697,6 +8697,16 @@
+ 	native_gpu_addon_mount(p, scratch, 0xa00, audio_source, sizeof(audio_source), audio_point, sizeof(audio_point),
+ 	    "/System/Library/Audio/Plug-Ins/HAL/BuiltinAudioPlugin.driver", "/System/Library/Audio/Plug-Ins/HAL/ShengAudio.driver/Info.plist",
+ 	    &native_gpu_addon4_stage, &native_gpu_addon4_status);
++	/* asteroids (sheng's sheng-wifi-launchd-cache.patch, the cache part): iPadOS 27 imports its jobs from this precompiled dictionary.
++	 * The add-on's xpc/ is the OS cache merged with board-selected job environment values (build-boot-runtime.py), every original
++	 * entry kept; it is shown over /System/Library/xpc, checked by its own launchd.plist. Without an xpc/ in the add-on nothing mounts. */
++	static const char launchd_xpc_source[] = "/private/var/ngpu/xpc";
++	static const char launchd_xpc_point[] = "/System/Library/xpc";
++	static volatile int launchd_cache_stage, launchd_cache_status;
++	native_gpu_addon_mount(p, scratch, 0xc00, launchd_xpc_source, sizeof(launchd_xpc_source),
++	    launchd_xpc_point, sizeof(launchd_xpc_point), "/System/Library/xpc/foreground_user_endpoints.plist",
++	    "/System/Library/xpc/launchd.plist", &launchd_cache_stage, &launchd_cache_status);
++	printf("launchd cache mount stage %d status %d\n", launchd_cache_stage, launchd_cache_status);
+ 	native_cryptex_os_view(p, scratch);
+ 	native_gestalt_cache_drop(p, scratch);
+ 	native_ls_store_drop(p, scratch);

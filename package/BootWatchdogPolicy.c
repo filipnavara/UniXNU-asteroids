@@ -40,6 +40,20 @@ static const char lite_jobs[]=
  "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration";
 static char policy[2048],jobs[200];
 volatile int sheng_watchdog_policy_status=-1;
+
+// iPadOS 27 (xnu-12377): the boot arguments this board always sets, built into the kernel as sheng's (UniXNU-sheng
+// BootWatchdogPolicy.c), so the command line carries only what changes between boots. sheng's bring-up patch reads them after the
+// command line (pexpert/gen/bootargs.c PE_builtin_boot_args); a name on the command line wins. iPadOS 17 has no reader and ignores them.
+// - owner-staged-apps=1: the deletable system apps (Notes, Weather, ...) shown as a union view over /Applications; the owner Data seed
+//   marks the first-boot migration done, so nothing installs them and only Settings was on the home screen.
+// - owner-dataprotect=1: the unencrypted Data volume keeps the protection class a caller sets; PosterBoard found its store's class
+//   missing, judged it not viable and showed no wallpaper.
+// - disable-jobs=com.apple.cameracaptured: the camera capture daemon has no camera here and its Metal client failed in every boot.
+// - sched_preemption_disable_debug_mode=0 interrupt-masked-debug-mode=0 validation_disables=0x11040: the DEVELOPMENT kernel's
+//   preemption-disabled and interrupt-masked timing checks (their iPhone limits are 24 MHz tick counts: 625 us and 6.25 ms on this
+//   19.2 MHz timer; the GPU and display paths exceed them) and madvise's free-page zero filling, off as on a release kernel. The
+//   checks that find kernel defects (assertions 0x800, mapping list 0x4, process reference tracking 0x20000) stay on.
+char PE_builtin_boot_args[]="owner-staged-apps=1 owner-dataprotect=1 disable-jobs=com.apple.cameracaptured sched_preemption_disable_debug_mode=0 interrupt-masked-debug-mode=0 validation_disables=0x11040";
 // asteroids T16b: with the GPU addon (sheng-gpu-addon=1) its test daemon takes the bluetoothd job name (UniXNU's
 // build-adreno-metal-plugin.py: that job is RunAtLoad and was seen to run on every boot), so sheng-lite leaves that one label enabled.
 static const char lite_kept_for_addon[]="com.apple.bluetoothd";
