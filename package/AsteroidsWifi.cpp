@@ -46,6 +46,7 @@ extern "C" int32_t asteroids_wpss_aop_result(void);
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
+extern "C" volatile unsigned nw_wifi_wmi_mem;  // the module's: answer the firmware's WMI host memory requests
 extern "C" volatile unsigned nw_wifi_scan_mask;  // the module's: the part of the channel list the next self-test scan takes
 extern "C" volatile uint64_t nw_wifi_ddr_range[6];  // the module's: the DMA memory the firmware is told about (QMI host capability)
 extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
@@ -1028,6 +1029,9 @@ void wifiThread(void *, wait_result_t) {
     board.rproc_up = pRprocUp;
     board.smp2p_wlan = pSmp2pWlan;
     board.cpr_voltage = pCprVoltage;
+    unsigned wmiMem = 1;  // wifi-wmi-mem=0: only log the firmware's host memory requests
+    PE_parse_boot_argn("wifi-wmi-mem", &wmiMem, sizeof wmiMem);
+    nw_wifi_wmi_mem = wmiMem;
     // wifi-dp-poll=MS: the module's polled data path groups (REO, WBM, RXDMA rings: register reads and tail pointer writes into the
     // chip) every MS milliseconds instead of every round; the vendor host touches those registers only on an interrupt and under a
     // wake vote. The copy engines (WMI, HTT) are still polled every round.

@@ -91,4 +91,6 @@ u64 nw_wifi_mhi_pa;
 /* The host's DMA memory as the firmware is told it (QMI host capability ddr_range, icnss2's): start, size of the board's DMA
  * window as the chip addresses it, the MSA region, the MSI doorbell's page. Set by the board before the module starts; 0 sends none. */
 u64 nw_wifi_ddr_range[6];
+/* Whether the firmware's WMI host memory requests are answered (1, as the vendor host) or only logged (0); set by the board. */
+unsigned nw_wifi_wmi_mem = 1;
 u32 nw_wifi_mhi_size;

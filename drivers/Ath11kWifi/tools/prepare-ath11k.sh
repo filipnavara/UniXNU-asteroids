@@ -21,6 +21,57 @@ rm -f $O/trace.h
 # Sending a command is the condition of the wait in ath11k_wmi_cmd_send: that wait must evaluate it once per round and never after it has succeeded.
 rm -f $O/wmi.c; sed '/^int ath11k_wmi_cmd_send(/,/^}/ s/wait_event_timeout(/wait_event_timeout_once(/' $A/wmi.c > $O/wmi.c
 grep -q 'wait_event_timeout_once' $O/wmi.c || { echo "wmi.c patch missed" >&2; exit 1; }
+# The firmware asks for host memory in WMI_SERVICE_READY (mem_reqs: req_id, unit size, units, flags); Qualcomm's host allocates every
+# request and lists the chunks in WMI_INIT (qca-wifi-host-cmn target_if/init_deinit init_deinit_handle_host_mem_req). ath11k ignores
+# them, so the WCN6750 vendor firmware would run without memory it counted on. The copy of wmi.c logs each request and, unless the
+# board clears nw_wifi_wmi_mem, allocates it (units: the request's, or the peers + 1 for NUM_UNITS_IS_NUM_PEERS/ACTIVE_PEERS as the
+# vendor host does, ath11k's WCN6750 config has 16 peers).
+python3 - "$O/wmi.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = """	case WMI_TAG_ARRAY_UINT32:
+		if (!svc_ready->wmi_svc_bitmap_done) {"""
+assert s.count(old) == 1, "wmi.c svc ready mark"
+new = """	case WMI_TAG_ARRAY_STRUCT: {
+		/* Ath11kWifi: the firmware's host memory requests (see tools/prepare-ath11k.sh). */
+		extern unsigned nw_wifi_wmi_mem;
+		const u32 *w = ptr;
+		u32 n = len / 20, i;
+
+		ath11k_info(ab, "service ready: %u host memory requests\\n", n);
+		for (i = 0; i < n; i++, w += 5) {
+			u32 req_id = w[1], unit = w[2], info = w[3], units = w[4], bytes, idx;
+			dma_addr_t paddr;
+			void *vaddr;
+
+			if (FIELD_GET(WMI_TLV_TAG, w[0]) != WMI_TAG_WLAN_HOST_MEM_REQ)
+				break;
+			if (info & 0x6)
+				units = 16 + 1;
+			bytes = units * unit;
+			ath11k_info(ab, "host memory request %u: id %u unit %u info 0x%x units %u -> %u bytes\\n",
+				    i, req_id, unit, info, w[4], bytes);
+			if (!nw_wifi_wmi_mem || !bytes || ab->wmi_ab.num_mem_chunks >= WMI_MAX_MEM_REQS)
+				continue;
+			vaddr = dma_alloc_coherent(ab->dev, bytes, &paddr, GFP_KERNEL);
+			if (!vaddr) {
+				ath11k_warn(ab, "host memory request %u: %u bytes not allocated\\n", i, bytes);
+				continue;
+			}
+			idx = ab->wmi_ab.num_mem_chunks++;
+			ab->wmi_ab.mem_chunks[idx].vaddr = vaddr;
+			ab->wmi_ab.mem_chunks[idx].paddr = paddr;
+			ab->wmi_ab.mem_chunks[idx].len = bytes;
+			ab->wmi_ab.mem_chunks[idx].req_id = req_id;
+		}
+		break;
+	}
+""" + old
+s = s.replace(old, new, 1)
+open(path, 'w').write(s)
+PY
+grep -q 'host memory requests' $O/wmi.c || { echo "wmi.c mem req patch missed" >&2; exit 1; }
 
 # The vendor's board data files are named by the board id the firmware reports (icnss2: bdwlan.bNN, three hex digits from 0x100 on);
 # the copy of core.c asks for that name before board.bin.
