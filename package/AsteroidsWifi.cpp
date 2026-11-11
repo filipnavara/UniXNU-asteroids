@@ -41,6 +41,8 @@ extern "C" int asteroids_wpss_qrtr_send(const void *packet, uint32_t length);
 extern "C" int asteroids_wpss_smp2p_wlan(uint32_t mask, uint32_t value);
 extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message);
 extern "C" int32_t asteroids_wpss_soc_wake_in(void);
+extern "C" int asteroids_wpss_aop(const char *message);
+extern "C" int32_t asteroids_wpss_aop_result(void);
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
@@ -665,6 +667,38 @@ void logMapping(const char *what, const volatile void *va) {
     logf(attr == 0xff ? 3 : 6, "wifi: mapping %s: pa %llx attr %02x (%s)", what, (par & 0x0000fffffffff000ull) | ((uintptr_t)va & 0xfff), attr,
          attr == 0x44 ? "Normal non-cacheable" : attr == 0xff ? "Normal CACHEABLE" : (attr & 0xf0) == 0 ? "Device" : "other");
 }
+// The firmware's CX voltage, as soon as its capability reply names it (the module calls this from the QMI path through
+// nw_board.cpr_voltage, long before the worker loop runs again) and again from the loop.
+unsigned gSupplies = 1;
+void applyCpr() {
+    // icnss2's qcom,vreg_ol_cpr: smpb3 at the open-loop voltage the firmware reports, before the radio's MAC comes up.
+    static uint32_t cprApplied;
+    if (gSupplies && nw_wifi_cpr_mv && nw_wifi_cpr_mv != cprApplied && nw_wifi_cpr_mv >= 600 && nw_wifi_cpr_mv <= 1100) {
+        cprApplied = nw_wifi_cpr_mv;
+        const Vrm cx = {"smpb3", cprApplied};
+        voteVrms(&cx, 1);
+    }
+    // icnss2 does not vote that rail itself: it gives the voltage to the AOP's WLAN power domain controller, whose wake sequence
+    // then sets the rail (power.c icnss_update_cpr_info: "{class: wlan_pdc, res: s3b.v, upval: mV}" over the AOSS QMP channel, at
+    // least BT_CXMX_VOLTAGE_MV = 950). Without it the PDC's wake voltage is whatever the AOP defaults to. wifi-pdc=0 skips.
+    static uint32_t pdcSent;
+    static uint64_t pdcAt;
+    if (nw_wifi_cpr_mv && nw_wifi_cpr_mv != pdcSent && nw_wifi_cpr_mv >= 600 && nw_wifi_cpr_mv <= 1100) {
+        unsigned pdc = 1;
+        PE_parse_boot_argn("wifi-pdc", &pdc, sizeof pdc);
+        pdcSent = nw_wifi_cpr_mv;
+        if (pdc) {
+            char message[64];
+            snprintf(message, sizeof message, "{class: wlan_pdc, res: s3b.v, upval: %u}", pdcSent > 950 ? pdcSent : 950);
+            const int rc = asteroids_wpss_aop(message);
+            logf(rc ? 3 : 6, "wifi: AOP %s: queued %d", message, rc);
+            pdcAt = pNow() + 1500;
+        }
+    }
+    if (pdcAt && pNow() >= pdcAt) {pdcAt = 0; logf(asteroids_wpss_aop_result() ? 3 : 6, "wifi: AOP wlan_pdc result %d", asteroids_wpss_aop_result());}
+}
+void pCprVoltage(uint32_t) {applyCpr();}
+
 // ---- board callbacks of the hybrid bus ----
 void *pMapPhys(uint64_t pa, size_t n) {
     IODeviceMemory *memory = IODeviceMemory::withRange(pa, n);
@@ -930,9 +964,8 @@ void wifiThread(void *, wait_result_t) {
         if (gMsiIova) {nw_wifi_ddr_range[0] = kIovaBase; nw_wifi_ddr_range[1] = 0x10000000; nw_wifi_ddr_range[4] = 0; nw_wifi_ddr_range[5] = 0;}
     }
     stage(StDma);
-    unsigned supplies = 1;
-    PE_parse_boot_argn("wifi-power", &supplies, sizeof supplies);
-    if (supplies) {
+    PE_parse_boot_argn("wifi-power", &gSupplies, sizeof gSupplies);
+    if (gSupplies) {
         const int rails = voteVrms(kVrms, sizeof kVrms / sizeof kVrms[0]), pa = enablePaSupply();
         native_wlan_stats[1] = rails | (pa ? 0x100 : 0);
     }
@@ -956,6 +989,7 @@ void wifiThread(void *, wait_result_t) {
     board.qrtr_send = pQrtrSend;
     board.rproc_up = pRprocUp;
     board.smp2p_wlan = pSmp2pWlan;
+    board.cpr_voltage = pCprVoltage;
     PE_parse_boot_argn("wifi-debug", &board.debug_mask, sizeof board.debug_mask);  // ath11k's ATH11K_DBG_* bits
     static const struct nw_wifi_events events = {scanDone, connectDone, nullptr, nullptr, nullptr, nullptr, nullptr};
     nw_wifi_set_events(&events);
@@ -978,13 +1012,7 @@ void wifiThread(void *, wait_result_t) {
     uint64_t nextFaults = 0;
     for (uint64_t n = 0;; ++n) {
         if (pNow() >= nextFaults) {nextFaults = pNow() + 500; faultReport();}
-        // icnss2's qcom,vreg_ol_cpr: smpb3 at the open-loop voltage the firmware reports, before the radio's MAC comes up.
-        static uint32_t cprApplied;
-        if (supplies && nw_wifi_cpr_mv && nw_wifi_cpr_mv != cprApplied && nw_wifi_cpr_mv >= 600 && nw_wifi_cpr_mv <= 1100) {
-            cprApplied = nw_wifi_cpr_mv;
-            const Vrm cx = {"smpb3", cprApplied};
-            voteVrms(&cx, 1);
-        }
+        applyCpr();
         const int busy = nw_wifi_step();
         if (!powered && nw_wifi_stats.stage >= 4) {
             // As icnss2 around every ring pointer write of the vendor host (hal_srng delayed register writes: prevent L1, i.e. leave the

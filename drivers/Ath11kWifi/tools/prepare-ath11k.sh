@@ -86,7 +86,7 @@ src, dst = sys.argv[1], sys.argv[2]
 s = open(src).read()
 old = '\tath11k_info(ab, "chip_id 0x%x chip_family 0x%x board_id 0x%x soc_id 0x%x\\n",\n'
 assert s.count(old) == 1, "qmi.c chip_id mark"
-s = s.replace(old, '\tif (resp.voltage_mv_valid) {\n\t\textern u32 nw_wifi_cpr_mv;\n\t\tnw_wifi_cpr_mv = resp.voltage_mv;\n'
+s = s.replace(old, '\tif (resp.voltage_mv_valid) {\n\t\textern u32 nw_wifi_cpr_mv;\n\t\textern void nw_wifi_cpr_report(u32 mv);\n\t\tnw_wifi_cpr_mv = resp.voltage_mv;\n\t\tnw_wifi_cpr_report(resp.voltage_mv);\n'
               '\t\tath11k_info(ab, "cpr voltage %u mV\\n", resp.voltage_mv);\n\t}\n' + old, 1)
 # The vendor's device information reply (platform/cnss_utils wlfw_device_info_resp_msg_v01) also carries the address and size of the
 # firmware's MHI state words (TLVs 0x12/0x13; icnss2 reads the WPSS-chip link state at +0 and the endpoint-awake word at +4): decoded

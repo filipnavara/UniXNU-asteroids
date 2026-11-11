@@ -40,6 +40,7 @@ struct nw_board {
   int (*rproc_up)(unsigned wait_ms);                 /* nonzero once the WPSS runs and its router link is up (waits up to wait_ms) */
   int (*smp2p_wlan)(uint32_t mask, uint32_t value);  /* the outbound SMP2P "wlan" bits */
   unsigned debug_mask;                               /* ath11k_debug_mask (ATH11K_DBG_*): its debug messages at log level 7 */
+  void (*cpr_voltage)(uint32_t millivolts);          /* the firmware named its CX rail's open-loop voltage (QMI capability reply) */
 };
 /* Ath11kWifi: one QRTR packet from the WPSS, on the wireless worker (the board queues them and calls this from its poll). */
 void nw_wifi_qrtr_rx(const void *packet, size_t len);

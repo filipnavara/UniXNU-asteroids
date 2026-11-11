@@ -250,6 +250,16 @@ void serviceSmp2p() {
     }
 }
 
+// A message for the AOP from another thread (the WLAN worker's wlan_pdc configuration, as icnss2 sends over the same QMP channel):
+// kept here and sent by this thread, which owns the AOSS QMP mailbox. gAopResult: 1 pending, 0 sent and acknowledged, negative failed.
+char gAop[64];
+volatile int gAopPending;
+volatile int32_t gAopResult = 1;
+void serviceAop() {
+    if (!gAopPending) return;
+    gAopResult = R::qmp(gAop);
+    gAopPending = 0;
+}
 void serviceGlink() {
     if (!gGlinkStarted) return;
     if (!gGlink.rx.data) {
@@ -462,7 +472,16 @@ extern "C" void asteroids_wpss_run(void) {
     startGlink();
 }
 
-extern "C" void asteroids_wpss_service(void) {service();}
+extern "C" void asteroids_wpss_service(void) {serviceAop(); service();}
+extern "C" int asteroids_wpss_aop(const char *message) {
+    if (gAopPending) return -16;
+    strlcpy(gAop, message, sizeof gAop);
+    gAopResult = 1;
+    gAopPending = 1;
+    R::wakeWpss();
+    return 0;
+}
+extern "C" int32_t asteroids_wpss_aop_result(void) {return gAopPending ? 1 : gAopResult;}
 extern "C" int asteroids_wpss_pending(void) {return gRunning && gCount != 0;}
 
 // ---- the router link for the WiFi module (wifi=5): raw QRTR packets both ways ----
