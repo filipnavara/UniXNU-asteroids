@@ -372,6 +372,16 @@ bool setupSmmu() {
     if (!map) return false;
     struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
     describeStreams(io, "before");
+    // wifi-smmu-delay=MS: wait MS milliseconds (logged every 10) before the streams move off the boot loader's bank 70. The
+    // translation attempts (wifi42-44) died with an SError ~1 ms after this point after only reading registers this path reads too;
+    // with nothing but a delay here, an SError means the cause is the time stream 0x1401 stays on bank 70, not our accesses.
+    unsigned hold = 0;
+    PE_parse_boot_argn("wifi-smmu-delay", &hold, sizeof hold);
+    for (unsigned waited = 0; waited < hold; waited += 10) {
+        logf(6, "wifi: smmu: %u ms on the boot loader's bank", waited);
+        IOSleep(10);
+    }
+    if (hold) logf(6, "wifi: smmu: held %u ms, moving the streams", hold);
     int32_t result = 0;
     unsigned bypassBank = ~0u;
     for (unsigned i = 0; i < 2; ++i) {
