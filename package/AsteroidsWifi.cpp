@@ -223,11 +223,25 @@ bool setupSmmu() {
     struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
     describeStreams(io, "before");
     int32_t result = 0;
+    unsigned bypassBank = ~0u;
     for (unsigned i = 0; i < 2; ++i) {
         struct smmu_plan plan = smmu_plan_bypass(&io, kStreams[i], gArena.pa, gArena.bytes);
         const char *e = plan.error ? plan.error : smmu_configure_bypass(&io, &plan, kStreams[i]);
-        if (!e) result |= 1 << i;
-        else logf(3, "wifi: SMMU stream %x: %s", kStreams[i], e);
+        if (!e) {result |= 1 << i; bypassBank = plan.bank; continue;}
+        // The boot loader leaves 0x1401, the stream the chip's DMA uses, in a translating bank of its own (bank 70, whose tables know
+        // nothing of this window: translation faults at the window's addresses, ctl_resp never came). Its exact stream-match group is
+        // pointed at the pass-through bank instead.
+        if (plan.slot != 0xffffffffu && bypassBank != ~0u && !strcmp(e, "conflicting stream mapping") &&
+            smmuRd(io.ctx, 0x800 + 4 * plan.slot) == (0x80000000u | kStreams[i])) {
+            const uint32_t old = smmuRd(io.ctx, 0xc00 + 4 * plan.slot), oldBank = old & 255;
+            smmuWr(io.ctx, 0xc00 + 4 * plan.slot, bypassBank);
+            const uint32_t now = smmuRd(io.ctx, 0xc00 + 4 * plan.slot);
+            const unsigned cb = (plan.pages + oldBank) * 4096u;
+            smmuWr(io.ctx, cb + 0x58, smmuRd(io.ctx, cb + 0x58));  // its stale faults (write one to clear)
+            logf(6, "wifi: SMMU stream %x: smr[%u] moved from s2cr %08x to %08x (pass-through bank %u)", kStreams[i], plan.slot, old, now, bypassBank);
+            if (now == bypassBank) {result |= 1 << i; continue;}
+        }
+        logf(3, "wifi: SMMU stream %x: %s", kStreams[i], e);
     }
     native_wlan_stats[9] = result;
     describeStreams(io, "after");
