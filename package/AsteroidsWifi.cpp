@@ -96,15 +96,31 @@ void logf(int level, const char *fmt, ...) {
 
 // ---- the DMA window: one physically contiguous block, mapped write-combined, handed out in pieces (sheng's allocator) ----
 constexpr unsigned kArenaBlocks = 16384;
-struct Arena {uint8_t *va; uint64_t pa; size_t bytes; struct Block {uint32_t off, size; bool used;} *blocks; unsigned count; size_t used, peak; unsigned failures;
+struct Arena {uint8_t *va; uint64_t pa, iova; size_t bytes; struct Block {uint32_t off, size; bool used;} *blocks; unsigned count; size_t used, peak; unsigned failures;
               IOBufferMemoryDescriptor *memory; IOMemoryMap *map;} gArena;
+// Where the window lives: below 4 GiB, in the modem's carveout (stock devicetree mpss_mem 0x8ac00000 + 230 MiB; UniXNU never starts the
+// modem, and DarwinBoot gives XNU only the DRAM above 4 GiB). ath11k gives this chip a 32-bit DMA mask: with the window at its 36-bit
+// physical address in XNU's memory the copy engines coped, but the receive DMA lost buffers and the firmware asserted in
+// whalRecvDmaLeakRecovery at the first scan. Translating the WLAN stream instead faulted: its boot-loader bank (70) is not the kernel's
+// to program (an SError at the first context register write). wifi-dma-pa=ADDR moves the window; wifi-dma-pa=0 allocates it in XNU's
+// memory as before.
+constexpr uint64_t kLowWindow = 0x8ac00000, kLowWindowBytes = 230ull << 20;
 bool arenaInit(size_t bytes) {
     gArena.blocks = static_cast<Arena::Block *>(IOMallocData(kArenaBlocks * sizeof(Arena::Block)));
     if (!gArena.blocks) return false;
-    gArena.memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous, bytes,
-                                                                     0x0000000ffffff000ull);
-    if (!gArena.memory || gArena.memory->prepare() != kIOReturnSuccess) return false;
-    gArena.pa = gArena.memory->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+    uint64_t low = kLowWindow;
+    PE_parse_boot_argn("wifi-dma-pa", &low, sizeof low);
+    if (low && (low & 0x1fffff || (low == kLowWindow && bytes > kLowWindowBytes) || low + bytes > 0x100000000ull)) return false;
+    if (low) {
+        gArena.pa = low;
+    } else {
+        // 2 MiB aligned (the mask's low zeros): the translated window maps it with 2 MiB blocks.
+        gArena.memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous,
+                                                                         bytes, 0x0000000fffe00000ull);
+        if (!gArena.memory || gArena.memory->prepare() != kIOReturnSuccess) return false;
+        gArena.pa = gArena.memory->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+    }
+    gArena.iova = gArena.pa;  // the chip's address of the window: the physical one until setupSmmu() translates it
     // A second, non-cacheable mapping of the same pages: the chip's view and the CPU's then agree without cache maintenance. Write-combined,
     // not kIOMapInhibitCache: on xnu-12377 that is Device memory, where bzero's wide and DC ZVA stores take alignment faults (the first
     // boot panicked in bzero of this window); the board's zzzzzzzzza patch keeps write-combined DRAM mappings Normal non-cacheable.
@@ -143,7 +159,7 @@ void *arenaAlloc(size_t n, uint64_t *bus) {
         gArena.used += n;
         if (gArena.used > gArena.peak) gArena.peak = gArena.used;
         bzero(p, n);
-        if (bus) *bus = gArena.pa + start;
+        if (bus) *bus = gArena.iova + start;
         native_wlan_stats[6] = (int32_t)(gArena.used >> 10);
         native_wlan_stats[7] = (int32_t)(gArena.peak >> 10);
         return p;
@@ -222,7 +238,92 @@ void faultReport() {
                       smmuRd(ctx, cb + 0x60), smmuRd(ctx, cb + 0x68), smmuRd(ctx, cb + 0x6c));
     }
 }
+// ---- the translated window (wifi-iommu=1, not the default: see arenaInit): ath11k gives this chip a 32-bit DMA mask, and its receive DMA lost buffers at
+// the window's 36-bit physical addresses (the firmware asserted in whalRecvDmaLeakRecovery at the first scan; the copy engines coped).
+// The boot loader leaves 0x1401 in a translating bank of its own; that bank is reprogrammed with a table of ours: a 32-bit input space,
+// 4 KiB granule, the window at IOVA 0xb0000000 (the stock devicetree's qcom,iommu-dma-addr-pool) in 2 MiB blocks, and the 2 MiB block
+// holding the MSI target mapped one to one. Both WLAN streams then use the bank. SMMUv2 context bank registers: SCTLR 0x0, TCR2 0x10,
+// TTBR0 0x20, TCR 0x30, MAIR0 0x38, FSR 0x58, TLBIALL 0x618, TLBSYNC 0x7f0, TLBSTATUS 0x7f4.
+constexpr uint64_t kIovaBase = 0xb0000000;
+IOBufferMemoryDescriptor *gTables;
+IOMemoryMap *gTablesMap;
+uint32_t smmuRd(void *ctx, unsigned o);
+void smmuWr(void *ctx, unsigned o, uint32_t v);
+int findSlot(void *ctx, uint16_t stream, unsigned count) {
+    for (unsigned i = 0; i < count; ++i) if (smmuRd(ctx, 0x800 + 4 * i) == (0x80000000u | stream)) return (int)i;
+    return -1;
+}
+bool setupTranslation(void *ctx) {
+    const uint32_t idr0 = smmuRd(ctx, 0x20), idr1 = smmuRd(ctx, 0x24);
+    unsigned count = idr0 & 255;
+    if (count > 128) count = 128;
+    const unsigned pages = 1u << (((idr1 >> 28) & 7) + 1), banks = idr1 & 255;
+    const int slot = findSlot(ctx, kStreams[1], count);
+    if (slot < 0) {logf(3, "wifi: iommu: no stream-match group for %x", kStreams[1]); return false;}
+    const uint32_t s2cr = smmuRd(ctx, 0xc00 + 4 * slot), bank = s2cr & 255;
+    if ((s2cr >> 16) & 3 || bank >= banks) {logf(3, "wifi: iommu: stream %x is not in a translating bank (s2cr %08x)", kStreams[1], s2cr); return false;}
+    if (gArena.bytes & 0x1fffff || gArena.pa & 0x1fffff || gArena.bytes > (64u << 20)) {logf(3, "wifi: iommu: window not 2 MiB aligned"); return false;}
+    // Tables: page 0 the L1 table (4 entries for 4 GiB), page 1 the L2 table of 0x80000000-0xbfffffff, page 2 that of 0-0x3fffffff.
+    gTables = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous,
+                                                               3 * 4096, 0x0000000ffffff000ull);
+    if (!gTables || gTables->prepare() != kIOReturnSuccess) return false;
+    const uint64_t tpa = gTables->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
+    IODeviceMemory *device = IODeviceMemory::withRange(tpa, 3 * 4096);
+    gTablesMap = device ? device->map(kIOMapAnywhere | kIOMapWriteCombineCache) : nullptr;  // non-cacheable, as the walks below
+    if (device) device->release();
+    if (!gTablesMap) return false;
+    volatile uint64_t *t = reinterpret_cast<volatile uint64_t *>(gTablesMap->getVirtualAddress());
+    for (unsigned i = 0; i < 3 * 512; ++i) t[i] = 0;
+    // Block attributes: AF, inner shareable, AP[2:1]=01 (read/write), MAIR index 0 (Normal non-cacheable) or 1 (Device nGnRE), block.
+    constexpr uint64_t kBlock = 1ull | 1ull << 10 | 3ull << 8 | 1ull << 6;
+    t[2] = (tpa + 4096) | 3;   // L1 index 2: 0x80000000-0xbfffffff
+    t[0] = (tpa + 8192) | 3;   // L1 index 0: 0-0x3fffffff
+    for (uint64_t off = 0; off < gArena.bytes; off += 0x200000)
+        t[512 + ((kIovaBase - 0x80000000ull + off) >> 21)] = (gArena.pa + off) | kBlock;
+    t[1024 + (kMsiAddr >> 21)] = (kMsiAddr & ~0x1fffffull) | kBlock | 1ull << 2;
+    __asm__ volatile("dsb sy" ::: "memory");
+    const unsigned cb = (pages + bank) * 4096u;
+    const uint32_t oldSctlr = smmuRd(ctx, cb);
+    smmuWr(ctx, cb, 0);                                      // disable while the registers change
+    smmuWr(ctx, 0x1800 + 4 * bank, 1);                       // CBA2R: AArch64 descriptors
+    smmuWr(ctx, cb + 0x10, 2);                               // TCR2: 40-bit output
+    smmuWr(ctx, cb + 0x38, 0x0444u);                         // MAIR0: 0 Normal NC, 1 Device nGnRE
+    smmuWr(ctx, cb + 0x3c, 0);
+    smmuWr(ctx, cb + 0x30, 32u | 1u << 23);                  // TCR: T0SZ 32 (4 GiB), walks non-cacheable, 4 KiB granule, no TTBR1
+    smmuWr(ctx, cb + 0x20, (uint32_t)tpa);                   // TTBR0 (ASID 0)
+    smmuWr(ctx, cb + 0x24, (uint32_t)(tpa >> 32));
+    smmuWr(ctx, cb + 0x58, smmuRd(ctx, cb + 0x58));          // stale faults
+    smmuWr(ctx, cb + 0x618, 0);                              // TLBIALL
+    smmuWr(ctx, cb + 0x7f0, 0);                              // TLBSYNC
+    unsigned polls = 0;
+    while ((smmuRd(ctx, cb + 0x7f4) & 1) && polls < 100000) ++polls;
+    smmuWr(ctx, cb, 0x61);                                   // M, fault report and interrupt, as the boot loader had it
+    // 0x1400 into the same bank: its own group (made by an earlier run or now) or a free one, the context first, then the match.
+    int other = findSlot(ctx, kStreams[0], count);
+    if (other < 0) for (unsigned i = 0; i < count && other < 0; ++i) if (!(smmuRd(ctx, 0x800 + 4 * i) & 0x80000000u)) other = (int)i;
+    if (other >= 0) {smmuWr(ctx, 0xc00 + 4 * other, bank); smmuWr(ctx, 0x800 + 4 * other, 0x80000000u | kStreams[0]);}
+    gArena.iova = kIovaBase;
+    logf(6, "wifi: iommu: bank %u (sctlr %x -> %x, tlbsync %u polls), tables %llx, window %llx at iova %llx, streams in slots %d %d",
+         bank, oldSctlr, smmuRd(ctx, cb), polls, tpa, gArena.pa, kIovaBase, slot, other);
+    native_wlan_stats[9] = 3 | 0x10;
+    return true;
+}
 bool setupSmmu() {
+    unsigned translate = 0;  // wifi-iommu=1: bank 70 raised an SError on this phone; kept for a bank the kernel may program
+    PE_parse_boot_argn("wifi-iommu", &translate, sizeof translate);
+    if (translate) {
+        IODeviceMemory *memory = IODeviceMemory::withRange(kSmmu, kSmmuBytes);
+        IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+        if (memory) memory->release();
+        if (!map) return false;
+        struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
+        describeStreams(io, "before");
+        const bool ok = setupTranslation(io.ctx);
+        describeStreams(io, "after");
+        gSmmuMap = map;
+        if (ok) return true;
+        logf(3, "wifi: iommu: falling back to pass-through");
+    }
     IODeviceMemory *memory = IODeviceMemory::withRange(kSmmu, kSmmuBytes);
     IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
     if (memory) memory->release();
@@ -442,7 +543,7 @@ void *pDmaAlloc(size_t n, uint64_t *bus) {return arenaAlloc(n, bus);}
 void pDmaFree(size_t, void *p, uint64_t) {arenaFree(p);}
 uint64_t pDmaMap(void *p, size_t, int) {
     if ((uint8_t *)p < gArena.va || (uint8_t *)p >= gArena.va + gArena.bytes) return 0;
-    return gArena.pa + ((uint8_t *)p - gArena.va);
+    return gArena.iova + ((uint8_t *)p - gArena.va);
 }
 void pDmaSync(uint64_t, size_t, int) {}
 
@@ -702,7 +803,7 @@ void wifiThread(void *, wait_result_t) {
     PE_parse_boot_argn("wifi-dma", &dmaMiB, sizeof dmaMiB);
     if (dmaMiB < 8 || dmaMiB > 256) dmaMiB = 48;
     if (!arenaInit((size_t)dmaMiB << 20)) {fail(StDma, -12); return;}
-    logf(6, "wifi: DMA window %llx + %u MiB, write-combined", gArena.pa, dmaMiB);
+    logf(6, "wifi: DMA window %llx + %u MiB, write-combined (%s)", gArena.pa, dmaMiB, gArena.memory ? "XNU memory" : "below 4 GiB");
     if (!setupSmmu()) {fail(StSmmu, native_wlan_stats[9]); return;}
     stage(StSmmu);
     stage(StDma);
