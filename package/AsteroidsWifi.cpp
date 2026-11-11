@@ -263,10 +263,10 @@ int findSlot(void *ctx, uint16_t stream, unsigned count) {
     return -1;
 }
 uint64_t gMsiIova;  // the MSI doorbell as the chip addresses it, when the window is translated
-// ownBank false: the boot loader's bank of stream 0x1401 is reprogrammed (bank 70 here: SError, never use). ownBank true (wifi-iommu=2):
-// a context bank no stream-match group names and whose translation is off is taken instead, both WLAN streams are pointed at it, and
-// the layout is icnss2's: the DMA window at IOVA 0xb0000000 (qcom,iommu-dma-addr-pool), the MSI doorbell's block inside the same
-// window (icnss2 dma_map_resource()s it there), the WLAN MSA region one to one.
+// The boot loader's bank of stream 0x1401 (bank 70 here) is reprogrammed with tables of ours; both WLAN streams then use it. ownBank
+// false (wifi-iommu=1): the MSI doorbell one to one. ownBank true (wifi-iommu=2): icnss2's layout, the DMA window at IOVA 0xb0000000
+// (qcom,iommu-dma-addr-pool), the MSI doorbell's block inside the same window (icnss2 dma_map_resource()s it there) and the WLAN MSA
+// region one to one. An SError ended both earlier attempts (wifi22 somewhere in these steps, wifi42 while reading other banks).
 bool setupTranslation(void *ctx, bool ownBank) {
     const uint32_t idr0 = smmuRd(ctx, 0x20), idr1 = smmuRd(ctx, 0x24);
     unsigned count = idr0 & 255;
@@ -275,33 +275,26 @@ bool setupTranslation(void *ctx, bool ownBank) {
     const int slot = findSlot(ctx, kStreams[1], count);
     if (slot < 0) {logf(3, "wifi: iommu: no stream-match group for %x", kStreams[1]); return false;}
     const uint32_t s2cr = smmuRd(ctx, 0xc00 + 4 * slot);
-    uint32_t bank = s2cr & 255;
-    if (!ownBank && ((s2cr >> 16) & 3 || bank >= banks)) {logf(3, "wifi: iommu: stream %x is not in a translating bank (s2cr %08x)", kStreams[1], s2cr); return false;}
-    if (ownBank) {
-        const uint32_t loaderBank = bank;
-        bank = ~0u;
-        for (unsigned b = banks; b-- > 0 && bank == ~0u;) {
-            if (b == loaderBank || (uint64_t)(pages + b + 1) * 4096u > kSmmuBytes) continue;
-            bool used = smmuRd(ctx, (pages + b) * 4096u) & 1;  // translating already
-            for (unsigned i = 0; i < count && !used; ++i)
-                used = (smmuRd(ctx, 0x800 + 4 * i) & 0x80000000u) && (smmuRd(ctx, 0xc00 + 4 * i) & 255) == b;
-            if (!used) bank = b;
-        }
-        if (bank == ~0u) {logf(3, "wifi: iommu: no free context bank"); return false;}
-        logf(6, "wifi: iommu: own bank %u of %u (cbar %08x, cba2r %x, sctlr %x)", bank, banks, smmuRd(ctx, 0x1000 + 4 * bank), smmuRd(ctx, 0x1800 + 4 * bank),
-             smmuRd(ctx, (pages + bank) * 4096u));
-    }
+    const uint32_t bank = s2cr & 255;
+    if ((s2cr >> 16) & 3 || bank >= banks) {logf(3, "wifi: iommu: stream %x is not in a translating bank (s2cr %08x)", kStreams[1], s2cr); return false;}
+    // ownBank: still the boot loader's bank (reading another bank's registers to look for a free one raised an SError: wifi42), but
+    // with icnss2's layout below. Every step is logged first: the fault kills only this thread and the log survives.
+    logf(6, "wifi: iommu: bank %u, cbar %08x cba2r %x sctlr %x ttbr0 %08x%08x tcr %x", bank, smmuRd(ctx, 0x1000 + 4 * bank), smmuRd(ctx, 0x1800 + 4 * bank),
+         smmuRd(ctx, (pages + bank) * 4096u), smmuRd(ctx, (pages + bank) * 4096u + 0x24), smmuRd(ctx, (pages + bank) * 4096u + 0x20),
+         smmuRd(ctx, (pages + bank) * 4096u + 0x30));
     if (gArena.bytes & 0x1fffff || gArena.pa & 0x1fffff || gArena.bytes > (64u << 20)) {logf(3, "wifi: iommu: window not 2 MiB aligned"); return false;}
     // Tables: page 0 the L1 table (4 entries for 4 GiB), page 1 the L2 table of 0x80000000-0xbfffffff, page 2 that of 0-0x3fffffff.
     gTables = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous,
                                                                3 * 4096, 0x0000000ffffff000ull);
     if (!gTables || gTables->prepare() != kIOReturnSuccess) return false;
+    logf(6, "wifi: iommu step: tables allocated");
     const uint64_t tpa = gTables->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
     IODeviceMemory *device = IODeviceMemory::withRange(tpa, 3 * 4096);
     gTablesMap = device ? device->map(kIOMapAnywhere | kIOMapWriteCombineCache) : nullptr;  // non-cacheable, as the walks below
     if (device) device->release();
     if (!gTablesMap) return false;
     volatile uint64_t *t = reinterpret_cast<volatile uint64_t *>(gTablesMap->getVirtualAddress());
+    logf(6, "wifi: iommu step: tables mapped at pa %llx", tpa);
     for (unsigned i = 0; i < 3 * 512; ++i) t[i] = 0;
     // Block attributes: AF, inner shareable, AP[2:1]=01 (read/write), MAIR index 0 (Normal non-cacheable) or 1 (Device nGnRE), block.
     constexpr uint64_t kBlock = 1ull | 1ull << 10 | 3ull << 8 | 1ull << 6;
@@ -320,23 +313,26 @@ bool setupTranslation(void *ctx, bool ownBank) {
     __asm__ volatile("dsb sy" ::: "memory");
     const unsigned cb = (pages + bank) * 4096u;
     const uint32_t oldSctlr = smmuRd(ctx, cb);
+    logf(6, "wifi: iommu step: tables written, sctlr off next");
     smmuWr(ctx, cb, 0);                                      // disable while the registers change
-    if (ownBank) smmuWr(ctx, 0x1000 + 4 * bank, 0x00010000); // CBAR: stage 1 with stage 2 bypass, as the pass-through bank has it
+    logf(6, "wifi: iommu step: sctlr off, cbar/cba2r next");
     smmuWr(ctx, 0x1800 + 4 * bank, 1);                       // CBA2R: AArch64 descriptors
+    logf(6, "wifi: iommu step: cba2r written, tcr2/mair/tcr/ttbr next");
     smmuWr(ctx, cb + 0x10, 2);                               // TCR2: 40-bit output
     smmuWr(ctx, cb + 0x38, 0x0444u);                         // MAIR0: 0 Normal NC, 1 Device nGnRE
     smmuWr(ctx, cb + 0x3c, 0);
     smmuWr(ctx, cb + 0x30, 32u | 1u << 23);                  // TCR: T0SZ 32 (4 GiB), walks non-cacheable, 4 KiB granule, no TTBR1
     smmuWr(ctx, cb + 0x20, (uint32_t)tpa);                   // TTBR0 (ASID 0)
     smmuWr(ctx, cb + 0x24, (uint32_t)(tpa >> 32));
+    logf(6, "wifi: iommu step: ttbr written, fsr clear and tlb invalidate next");
     smmuWr(ctx, cb + 0x58, smmuRd(ctx, cb + 0x58));          // stale faults
     smmuWr(ctx, cb + 0x618, 0);                              // TLBIALL
     smmuWr(ctx, cb + 0x7f0, 0);                              // TLBSYNC
     unsigned polls = 0;
     while ((smmuRd(ctx, cb + 0x7f4) & 1) && polls < 100000) ++polls;
-    smmuWr(ctx, cb, ownBank ? 0x21 : 0x61);                  // M and fault report (and the interrupt, as the boot loader had it)
-    if (ownBank) {smmuWr(ctx, 0xc00 + 4 * slot, bank); logf(6, "wifi: iommu: stream %x slot %d -> bank %u (s2cr %08x)", kStreams[1], slot, bank, smmuRd(ctx, 0xc00 + 4 * slot));}
-    if (gBankCount < 4) gBanks[gBankCount++] = bank;         // its faults in the fault report
+    logf(6, "wifi: iommu step: tlb invalidated (%u polls), sctlr on next", polls);
+    smmuWr(ctx, cb, 0x61);                                   // M, fault report and interrupt, as the boot loader had it
+    logf(6, "wifi: iommu step: sctlr on, stream 1400 next");
     // 0x1400 into the same bank: its own group (made by an earlier run or now) or a free one, the context first, then the match.
     int other = findSlot(ctx, kStreams[0], count);
     if (other < 0) for (unsigned i = 0; i < count && other < 0; ++i) if (!(smmuRd(ctx, 0x800 + 4 * i) & 0x80000000u)) other = (int)i;
