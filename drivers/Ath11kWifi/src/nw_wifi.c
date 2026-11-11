@@ -63,7 +63,21 @@ void nw_wifi_link_state(char *text, int size) {
   if (!g_hw || state.state != NW_STA_UP) return;
   snprintf(text, size, "freq %u rssi %d tx %u.%u Mbps", state.freq_mhz, state.signal_dbm, state.tx_rate_100kbps / 10, state.tx_rate_100kbps % 10);
 }
-void nw_wifi_rx_state(char *b, int n) { if (n) b[0] = 0; }
+/* The receive rings as the host sees them (worker only): free entries in the refill and monitor-status refill rings, entries waiting in
+ * the REO destination, REO exception, WBM receive release and RXDMA error rings; -1 for a ring that was never set up. */
+static int ring_count(struct ath11k_base *ab, struct dp_srng *r, int dst) {
+  if (!r->vaddr) return -1;
+  struct hal_srng *s = &ab->hal.srng_list[r->ring_id]; spin_lock_bh(&s->lock);
+  int n = dst ? ath11k_hal_srng_dst_num_free(ab, s, true) : ath11k_hal_srng_src_num_free(ab, s, true); spin_unlock_bh(&s->lock); return n; }
+void nw_wifi_rx_state(char *b, int n) {
+  if (n) b[0] = 0;
+  if (!g_hw) return;
+  struct ath11k *ar = g_hw->priv; struct ath11k_base *ab = ar->ab; struct ath11k_dp *dp = &ab->dp;
+  snprintf(b, n, "refill %d mon %d reo %d %d %d %d exc %d rel %d err %d",
+           ring_count(ab, &ar->dp.rx_refill_buf_ring.refill_buf_ring, 0), ring_count(ab, &ar->dp.rx_mon_status_refill_ring[0].refill_buf_ring, 0),
+           ring_count(ab, &dp->reo_dst_ring[0], 1), ring_count(ab, &dp->reo_dst_ring[1], 1), ring_count(ab, &dp->reo_dst_ring[2], 1),
+           ring_count(ab, &dp->reo_dst_ring[3], 1), ring_count(ab, &dp->reo_except_ring, 1), ring_count(ab, &dp->rx_rel_ring, 1),
+           ring_count(ab, &ar->dp.rxdma_err_dst_ring[0], 1)); }
 void nw_wifi_ring_state(char *b, int n) { if (n) b[0] = 0; }
 void nw_wifi_htt_stats(int type) { (void)type; }
 int nw_wifi_start(const struct lx_platform *p, const struct nw_board *b) {

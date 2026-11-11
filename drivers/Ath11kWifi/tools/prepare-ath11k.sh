@@ -56,6 +56,11 @@ assert s.count(old) == 1, "mac.c address mark"
 s = s.replace(old, old + '\t\tif (!is_valid_ether_addr(ar->mac_addr) ||\n\t\t    (!ar->mac_addr[0] && ar->mac_addr[1] == 0x03 && ar->mac_addr[2] == 0x7f)) {\n'
               '\t\t\tnw_board_mac(ar->mac_addr);\n\t\t\tar->mac_addr[4] += i;\n\t\t}\n', 1)
 s = s.replace('#include "mac.h"\n', '#include "mac.h"\nvoid nw_board_mac(u8 *a);\n', 1)
+# No default monitor-status TLV filter at start: the vendor host (qcacld, MCL) enables status-ring TLVs only for packet logging; with
+# ath11k's default the WLAN.MSL.3 firmware asserted in whalRecvDmaLeakRecovery during the first scan.
+old2 = '\tret = ath11k_mac_config_mon_status_default(ar, true);\n'
+assert s.count(old2) == 1, "mac.c mon status mark"
+s = s.replace(old2, '\tret = 0; /* Ath11kWifi: no default monitor-status filter (see tools/prepare-ath11k.sh) */\n', 1)
 assert 'void nw_board_mac' in s
 open(dst, 'w').write(s)
 PY

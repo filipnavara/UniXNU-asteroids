@@ -491,3 +491,22 @@ extern "C" int asteroids_wpss_smp2p_wlan(uint32_t mask, uint32_t value) {
     kickSmp2p();
     return 0;
 }
+// icnss2's SMP2P messages to the WLAN firmware (platform/icnss2 main.c icnss_send_smp2p): value = sequence << 16 | message, a sequence
+// per entry. entry 1: "wlan_soc_wake" (4 SOC_WAKE_REQ, 5 SOC_WAKE_REL), entry 2: "wlan_ep_power_save" (6 PCI_EP_POWER_SAVE_ENTER,
+// 7 PCI_EP_POWER_SAVE_EXIT), entry 0: "wlan" (1 POWER_SAVE_ENTER, 2 POWER_SAVE_EXIT); message 0 resets the entry (sequence 0). Returns
+// the value written, or -19 before the WPSS runs.
+extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message) {
+    static uint32_t sequence[3];
+    const int index = entry == 0 ? gWlanOut : entry == 1 ? gWakeOut : entry == 2 ? gPowerSaveOut : -1;
+    if (index < 0 || entry > 2) return -19;
+    if (!message) sequence[entry] = 0;
+    const uint32_t value = message ? (sequence[entry]++ & 0xffff) << 16 | message : 0;
+    qcom_smp2p_update(&gP2p, index, 0xffffffffu, value);
+    kickSmp2p();
+    return (int32_t)value;
+}
+// The inbound "wlan_soc_wake" value (the firmware's acknowledgement of a wake request), -1 without the entry.
+extern "C" int32_t asteroids_wpss_soc_wake_in(void) {
+    const int wake = gP2p.in ? qcom_smp2p_find_in(&gP2p, "wlan_soc_wake") : -1;
+    return wake >= 0 ? (int32_t)qcom_smp2p_in_value(&gP2p, wake) : -1;
+}

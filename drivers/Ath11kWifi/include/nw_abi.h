@@ -46,6 +46,8 @@ void nw_wifi_qrtr_rx(const void *packet, size_t len);
 void nw_wifi_qrtr_down(void);
 /* Ath11kWifi: a scan of every channel without a control client (the board's self-test), on the wireless worker; 0 when started. */
 int nw_wifi_self_scan(void);
+/* Ath11kWifi: the receive rings' fill state as text (wireless worker only). */
+void nw_wifi_rx_state(char *text, int size);
 struct nw_wifi_stats { uint32_t stage, scans, frames, beacons, bss_seen; int last_err; };
 /* Cumulative buffer counters; snapshots do not reset live ownership counts. */
 struct nw_buffer_stats {

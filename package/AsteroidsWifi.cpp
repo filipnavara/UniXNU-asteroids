@@ -38,6 +38,8 @@ extern "C" int asteroids_wpss_qrtr_attach(void (*rx)(void *, const uint8_t *, ui
 extern "C" int asteroids_wpss_qrtr_up(void);
 extern "C" int asteroids_wpss_qrtr_send(const void *packet, uint32_t length);
 extern "C" int asteroids_wpss_smp2p_wlan(uint32_t mask, uint32_t value);
+extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message);
+extern "C" int32_t asteroids_wpss_soc_wake_in(void);
 extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
 extern "C" volatile int32_t native_wpss_stats[16];
 extern "C" volatile uint32_t nw_wifi_cpr_mv;  // the module's: the CX voltage the firmware asked for (QMI capability reply)
@@ -860,6 +862,17 @@ void wifiThread(void *, wait_result_t) {
         }
         const int busy = nw_wifi_step();
         if (!powered && nw_wifi_stats.stage >= 4) {
+            // As icnss2 around every ring pointer write of the vendor host (hal_srng delayed register writes: prevent L1, i.e. leave the
+            // WPSS-chip link's power save, and a SoC wake vote): asked once and held (wifi-awake=0 skips). Without them the firmware
+            // asserted in whalRecvDmaLeakRecovery/Detect at the first scan.
+            unsigned awake = 1;
+            PE_parse_boot_argn("wifi-awake", &awake, sizeof awake);
+            if (awake) {
+                const int32_t before = asteroids_wpss_soc_wake_in();
+                const int32_t ep = asteroids_wpss_smp2p_send(2, 7), wake = asteroids_wpss_smp2p_send(1, 4);
+                IOSleep(20);
+                logf(6, "wifi: awake votes: ep power save exit %x, soc wake %x, soc wake in %x -> %x", ep, wake, before, asteroids_wpss_soc_wake_in());
+            }
             powered = true;
             stage(StInterface);
             nw_wifi_power(1);
@@ -873,6 +886,15 @@ void wifiThread(void *, wait_result_t) {
             if (s) logf(3, "wifi: scan refused: %d", s);
         }
         if (gScanDone) {gScanDone = 0; logNetworks(); stage(StScanned);}
+        // The receive rings every 2 s for the first 90 s with the radio on (the firmware asserted in its receive DMA leak check around the
+        // first scan's end).
+        static uint64_t nextRings, ringsUntil;
+        if (powered && !ringsUntil) ringsUntil = pNow() + 90000;
+        if (powered && pNow() < ringsUntil && pNow() >= nextRings) {
+            nextRings = pNow() + 2000;
+            char rings[160]; nw_wifi_rx_state(rings, sizeof rings);
+            if (rings[0]) logf(6, "wifi: rings %s", rings);
+        }
         if (gConnectDone >= 0) {
             struct nw_wifi_status st; nw_wifi_status_get(&st);
             logf(6, "wifi: join result %d, state %u, %u MHz, %d dBm", gConnectDone, st.state, st.freq_mhz, st.signal_dbm);
