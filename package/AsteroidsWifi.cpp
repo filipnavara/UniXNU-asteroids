@@ -266,8 +266,6 @@ void faultReport() {
 // holding the MSI target mapped one to one. Both WLAN streams then use the bank. SMMUv2 context bank registers: SCTLR 0x0, TCR2 0x10,
 // TTBR0 0x20, TCR 0x30, MAIR0 0x38, FSR 0x58, TLBIALL 0x618, TLBSYNC 0x7f0, TLBSTATUS 0x7f4.
 constexpr uint64_t kIovaBase = 0xb0000000;
-IOBufferMemoryDescriptor *gTables;
-IOMemoryMap *gTablesMap;
 uint32_t smmuRd(void *ctx, unsigned o);
 void smmuWr(void *ctx, unsigned o, uint32_t v);
 int findSlot(void *ctx, uint16_t stream, unsigned count) {
@@ -308,16 +306,15 @@ bool setupTranslation(void *ctx, bool ownBank) {
          tRd(ctx, (pages + bank) * 4096u + 0x30));
     if (gArena.bytes & 0x1fffff || gArena.pa & 0x1fffff || gArena.bytes > (64u << 20)) {logf(3, "wifi: iommu: window not 2 MiB aligned"); return false;}
     // Tables: page 0 the L1 table (4 entries for 4 GiB), page 1 the L2 table of 0x80000000-0xbfffffff, page 2 that of 0-0x3fffffff.
-    gTables = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous,
-                                                               3 * 4096, 0x0000000ffffff000ull);
-    if (!gTables || gTables->prepare() != kIOReturnSuccess) return false;
+    // From the DMA window, whose only mapping is non-cacheable: tables in ordinary XNU memory (wifi51) also had the kernel's cacheable
+    // mapping, whose dirty lines from the zero fill can be written back over the entries later (the SMMU then reported a translation
+    // fault at IOVA 0xb0002000, inside the window, and HTC never came up).
+    uint64_t tbus = 0;
+    uint8_t *tva = static_cast<uint8_t *>(arenaAlloc(3 * 4096, &tbus));
+    if (!tva || ((tva - gArena.va) & 0xfff)) {logf(3, "wifi: iommu: no table pages in the window"); return false;}
     logf(6, "wifi: iommu step: tables allocated");
-    const uint64_t tpa = gTables->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
-    IODeviceMemory *device = IODeviceMemory::withRange(tpa, 3 * 4096);
-    gTablesMap = device ? device->map(kIOMapAnywhere | kIOMapWriteCombineCache) : nullptr;  // non-cacheable, as the walks below
-    if (device) device->release();
-    if (!gTablesMap) return false;
-    volatile uint64_t *t = reinterpret_cast<volatile uint64_t *>(gTablesMap->getVirtualAddress());
+    const uint64_t tpa = gArena.pa + (uint64_t)(tva - gArena.va);
+    volatile uint64_t *t = reinterpret_cast<volatile uint64_t *>(tva);
     logf(6, "wifi: iommu step: tables mapped at pa %llx", tpa);
     for (unsigned i = 0; i < 3 * 512; ++i) t[i] = 0;
     // Block attributes: AF, inner shareable, AP[2:1]=01 (read/write), MAIR index 0 (Normal non-cacheable) or 1 (Device nGnRE), block.
