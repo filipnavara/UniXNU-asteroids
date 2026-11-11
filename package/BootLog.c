@@ -1254,7 +1254,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   }
   // asteroids: the WiFi module on the WPSS (AsteroidsWifi.cpp, wifi=5): stage and error, interrupts and vectors seen, QRTR packets in/out,
   // DMA KiB used/peak, firmware files served|refused<<16, SMMU result, dropped packets, scans asked, networks, rounds/1024, start result,
-  // DMA failures; the module's own stage counters; the networks of the self-test scan; then the module's last 40 log lines.
+  // DMA failures; the module's own stage counters; the networks of the self-test scan; then the module's log lines since the last slot.
   if (&native_wlan_stats && native_wlan_stats[0]) {
     char row[240];
     snprintf(row, sizeof row, "[wlan] st=%d err=%d irq=%d vec=%x rx=%d tx=%d dma=%dK/%dK fw=%x smmu=%x drop=%d scans=%d nets=%d rounds=%d start=%d dmafail=%d",
@@ -1271,14 +1271,18 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       snprintf(row, sizeof row, "[wlan] nets %.223s", native_wlan_bss);
       at = put(out, at, cap, row, sizeof row);
     }
-    // The last 40 lines in every slot: the log window keeps only the newest slots, so lines shown once would be lost on a long boot.
+    // The lines added since the last slot, at most 100 per slot (the window keeps the newest slots: read the log within some minutes).
     if (&native_wlan_lines && native_wlan_lines) {
+      static uint32_t shown;
       const uint32_t n = native_wlan_lines_n;
-      for (uint32_t i = n > 40 ? n - 40 : 0; i < n; ++i) {
+      uint32_t i = shown;
+      if (n - i > 256) i = n - 256;
+      for (uint32_t k = 0; i < n && k < 100; ++i, ++k) {
         char line[124];
         snprintf(line, sizeof line, "[wlan-log] %.110s", native_wlan_lines + (i % 256) * 112);
         at = put(out, at, cap, line, sizeof line);
       }
+      shown = i;
     }
   }
   // Battery power source (ShengBattery.cpp): stage, percent, mV, mA, temperature (raw), flags (present, external, charging, full,

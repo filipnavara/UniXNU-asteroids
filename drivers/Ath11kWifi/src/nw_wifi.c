@@ -67,7 +67,7 @@ void nw_wifi_rx_state(char *b, int n) { if (n) b[0] = 0; }
 void nw_wifi_ring_state(char *b, int n) { if (n) b[0] = 0; }
 void nw_wifi_htt_stats(int type) { (void)type; }
 int nw_wifi_start(const struct lx_platform *p, const struct nw_board *b) {
-  lx_plat = p; nw_board = b; ath11k_debug_mask = 0; /* Keep info/warnings and counters; skip HTT/WMI debug formatting in normal traffic. */
+  lx_plat = p; nw_board = b; ath11k_debug_mask = b->debug_mask; /* 0: info/warnings and counters only, no HTT/WMI debug formatting in normal traffic. */
   nw_wifi_buffer_pool_configure(1024 * 1024);
   lx_root_init(); nw_qrtr_init();
   int r = nw_mainline_init(); if (r) { lx_log(3, "wifi: mainline init failed"); goto fail; }

@@ -608,6 +608,7 @@ void wifiThread(void *, wait_result_t) {
     board.qrtr_send = pQrtrSend;
     board.rproc_up = pRprocUp;
     board.smp2p_wlan = pSmp2pWlan;
+    PE_parse_boot_argn("wifi-debug", &board.debug_mask, sizeof board.debug_mask);  // ath11k's ATH11K_DBG_* bits
     static const struct nw_wifi_events events = {scanDone, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     nw_wifi_set_events(&events);
     static const struct nw_control_transport transport = {nullptr, controlSend, controlWake};
