@@ -540,3 +540,32 @@ void cfg80211_control_port_tx_status(struct wireless_dev *wdev, u64 cookie, cons
       !nw_control_put_u64(&b, NW_CONTROL_ATTR_COOKIE, cookie)) nw_cfg80211_event_send(&b);
   memzero_explicit(bytes, capacity); kfree(bytes);
 }
+/* Ath11kWifi: a scan of every channel for the board's own test, without a control client (the client's NW_CONTROL_SCAN request with no
+ * attributes). Runs on the wireless worker; the done event reaches the mainline observer as a client's scan's does. */
+int nw_wifi_self_scan(void) {
+  if (!primary) return -ENODEV;
+  /* The 2.4 and 5 GHz channels, as a client lists them: no 6 GHz (cfg80211 splits a scan that has them, and its 59 passive channels
+   * would take most of the time, Ath12kWifi's reasoning for the WCN7850). */
+  struct cfg80211_registered_device *rdev = wiphy_to_rdev(primary->ieee80211_ptr->wiphy);
+  u8 freqs[4 * 128]; size_t count = 0;
+  for (unsigned band = NL80211_BAND_2GHZ; band <= NL80211_BAND_5GHZ; band++) {
+    struct ieee80211_supported_band *supported = rdev->wiphy.bands[band];
+    for (unsigned i = 0; supported && i < supported->n_channels && count < 128; i++)
+      if (!(supported->channels[i].flags & (IEEE80211_CHAN_DISABLED | IEEE80211_CHAN_NO_20MHZ)))
+        put_unaligned_le32(supported->channels[i].center_freq, freqs + 4 * count++);
+  }
+  if (!count) return -EINVAL;
+  u8 *bytes = kmalloc(NW_CONTROL_HEADER_SIZE + 16 + sizeof(freqs), GFP_KERNEL); struct nw_control_builder b; struct nw_control_view view;
+  if (!bytes) return -ENOMEM;
+  if (nw_control_begin(&b, bytes, NW_CONTROL_HEADER_SIZE + 16 + sizeof(freqs), NW_CONTROL_REQUEST, NW_CONTROL_SCAN, 0, owner, generation, 0) ||
+      nw_control_put(&b, NW_CONTROL_ATTR_SCAN_FREQUENCIES, freqs, 4 * count) || nw_control_decode(b.bytes, b.length, &view)) {
+    kfree(bytes); return -EINVAL;
+  }
+  rtnl_lock();
+  int result = radio_enabled ? dev_open(primary, NULL) : 0;
+  if (!result) { wiphy_lock(&rdev->wiphy); result = scan(rdev, &view); wiphy_unlock(&rdev->wiphy); }
+  rtnl_unlock();
+  kfree(bytes);
+  lx_log(6, "wifi: self-test scan of %zu channels started: %d", count, result);
+  return result;
+}

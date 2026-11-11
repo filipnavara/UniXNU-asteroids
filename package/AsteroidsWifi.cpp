@@ -643,7 +643,8 @@ void wifiThread(void *, wait_result_t) {
         }
         if (powered && selfScan && !scanAsked && pNow() >= scanAt) {
             scanAsked = true;
-            const int s = nw_wifi_scan(nullptr, 0);
+            // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
+            const int s = nw_wifi_self_scan();
             native_wlan_stats[11] = native_wlan_stats[11] + 1;
             if (s) logf(3, "wifi: scan refused: %d", s);
         }

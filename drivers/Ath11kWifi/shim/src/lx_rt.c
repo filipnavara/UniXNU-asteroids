@@ -179,7 +179,7 @@ void lx_sleep_us(unsigned int us) {
   if (us < 1000) lx_delay_us(us);
   else lx_delay_ms(us / 1000 + (us % 1000 != 0));
 }
-void lx_warn(const char *f, int l) { lx_log(4, "warning at %s:%d", f, l); }
+void lx_warn(const char *f, int l) { const char *b = f; for (const char *c = f; *c; c++) if (*c == '/') b = c + 1; lx_log(4, "warning at %s:%d", b, l); }
 void lx_bug(const char *f, int l) { lx_log(3, "bug at %s:%d", f, l); lx_plat->halt(); for (;;) {} }
 void (*lx_log_tap)(int level, const char *line);
 void lx_log(int level, const char *fmt, ...) {
