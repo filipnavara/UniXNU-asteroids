@@ -28,6 +28,7 @@
 #include "nw_abi.h"
 #include "nw_control_endpoint.h"
 #include "SmmuBypass.h"
+#include "AsteroidsRemote.h"
 #include "BootResetCore.h"
 extern "C" {
 #include "QcomRpmh.h"
@@ -92,6 +93,7 @@ void pLog(int level, const char *line) {
     if (level <= 4) IOLog("wifi: %s\n", line);  // warnings and errors also in the kernel's message buffer
 }
 void logf(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void logMapping(const char *what, const volatile void *va);
 void logf(int level, const char *fmt, ...) {
     char line[160];
     va_list ap;
@@ -618,6 +620,20 @@ int pFwGet(const char *path, const uint8_t **data, size_t *size) {
     return 0;
 }
 
+// What the CPU really does with a mapping: the stage 1 translation of va for a read (AT S1E1R), from PAR_EL1: the physical address
+// and the memory attribute byte of the mapping's MAIR slot (0x44 Normal non-cacheable, 0xff Normal write-back cacheable, 0x00/0x04/
+// 0x0c Device). Memory the chip and the firmware share with the CPU must not be cacheable. Logs "<what>: va .. pa .. attr ..".
+void logMapping(const char *what, const volatile void *va) {
+    _disable_preemption();
+    __asm__ volatile("at s1e1r, %0\n isb" : : "r"(va));
+    uint64_t par;
+    __asm__ volatile("mrs %0, par_el1" : "=r"(par));
+    _enable_preemption();
+    if (par & 1) {logf(3, "wifi: mapping %s: va %p does not translate (par %llx)", what, va, par); return;}
+    const unsigned attr = (unsigned)(par >> 56);
+    logf(attr == 0xff ? 3 : 6, "wifi: mapping %s: pa %llx attr %02x (%s)", what, (par & 0x0000fffffffff000ull) | ((uintptr_t)va & 0xfff), attr,
+         attr == 0x44 ? "Normal non-cacheable" : attr == 0xff ? "Normal CACHEABLE" : (attr & 0xf0) == 0 ? "Device" : "other");
+}
 // ---- board callbacks of the hybrid bus ----
 void *pMapPhys(uint64_t pa, size_t n) {
     IODeviceMemory *memory = IODeviceMemory::withRange(pa, n);
@@ -625,6 +641,7 @@ void *pMapPhys(uint64_t pa, size_t n) {
     if (memory) memory->release();
     if (!map) {logf(3, "wifi: cannot map %llx + %zx", pa, n); return nullptr;}
     logf(6, "wifi: register window %llx + %zx", pa, n);
+    logMapping("register window", reinterpret_cast<void *>(map->getVirtualAddress()));
     return reinterpret_cast<void *>(map->getVirtualAddress());  // kept for the boot
 }
 int pQrtrSend(const void *packet, size_t len) {
@@ -786,6 +803,7 @@ volatile uint32_t *mhiWords() {
     volatile uint32_t *page = mapRegs(pa & ~0xfffull, 0x1000, &keep);
     words = page ? page + (pa & 0xfff) / 4 : nullptr;
     logf(6, "wifi: mhi state words at %llx (size %x): %s", pa, nw_wifi_mhi_size, words ? "mapped" : "map failed");
+    if (words) logMapping("mhi state words", words);
     return words;
 }
 int64_t mhiWord(unsigned index) {
@@ -860,6 +878,9 @@ void wifiThread(void *, wait_result_t) {
     if (dmaMiB < 8 || dmaMiB > 256) dmaMiB = 48;
     if (!arenaInit((size_t)dmaMiB << 20)) {fail(StDma, -12); return;}
     logf(6, "wifi: DMA window %llx + %u MiB, write-combined (%s)", gArena.pa, dmaMiB, gArena.memory ? "XNU memory" : "below 4 GiB");
+    logMapping("DMA window start", gArena.va);
+    logMapping("DMA window end", gArena.va + gArena.bytes - 4096);
+    if (asteroids_remote::smem().base) logMapping("SMEM (SMP2P, GLINK)", asteroids_remote::smem().base);
     if (!setupSmmu()) {fail(StSmmu, native_wlan_stats[9]); return;}
     stage(StSmmu);
     // icnss2's host capability ddr_range: the DMA window as the chip addresses it, the WLAN MSA region (stock devicetree
