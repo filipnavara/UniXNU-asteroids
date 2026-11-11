@@ -128,6 +128,76 @@ for a, b in (('\tstruct qmi_wlanfw_device_info_resp_msg_v01 resp = {};\n', '\tst
 open(dst, 'w').write(s)
 PY
 grep -q 'nw_wifi_mhi_pa = resp.mhi_addr' $O/qmi.c || { echo "qmi.c device info patch missed" >&2; exit 1; }
+# icnss2 tells the firmware where the host's DMA memory is: the host capability's ddr_range (TLV 0x1F, three {start, size}; icnss2:
+# the WLAN IOVA window, then the MSA region). ath11k sends none. The board fills nw_wifi_ddr_range (its DMA window as the chip addresses
+# it, the MSA region) before the module starts; the copy of qmi.c adds the TLV when the first range is set. NW_DDR_RANGE=0 leaves it out.
+if [ "${NW_DDR_RANGE:-1}" != 0 ]; then
+python3 - "$O/qmi.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+fn = 'int ath11k_qmi_host_cap_send(struct ath11k_base *ab)\n{\n'
+assert s.count(fn) == 1, "qmi.c host cap mark"
+decl = '/* clang stack usage explodes if this is inlined */\nstatic noinline_for_stack\n' + fn
+assert s.count(decl) == 1, "qmi.c host cap declaration mark"
+helper = """/* Ath11kWifi: the host capability with icnss2's ddr_range (cnss_utils wlfw_host_cap_req_msg_v01, TLV 0x1F). */
+extern u64 nw_wifi_ddr_range[4];
+struct nw_ddr_range { u64 start; u64 size; };
+struct nw_host_cap_req {
+\tstruct qmi_wlanfw_host_cap_req_msg_v01 base;
+\tu8 ddr_range_valid;
+\tstruct nw_ddr_range ddr_range[3];
+};
+static const struct qmi_elem_info nw_ddr_range_ei[] = {
+\t{ .data_type = QMI_UNSIGNED_8_BYTE, .elem_len = 1, .elem_size = sizeof(u64), .array_type = NO_ARRAY, .tlv_type = 0,
+\t  .offset = offsetof(struct nw_ddr_range, start) },
+\t{ .data_type = QMI_UNSIGNED_8_BYTE, .elem_len = 1, .elem_size = sizeof(u64), .array_type = NO_ARRAY, .tlv_type = 0,
+\t  .offset = offsetof(struct nw_ddr_range, size) },
+\t{ .data_type = QMI_EOTI, .array_type = NO_ARRAY, .tlv_type = QMI_COMMON_TLV_TYPE },
+};
+static struct qmi_elem_info nw_host_cap_ei_buf[64];
+static const struct qmi_elem_info *nw_host_cap_ei(void)
+{
+\tint n = 0;
+
+\tif (nw_host_cap_ei_buf[0].data_type)
+\t\treturn nw_host_cap_ei_buf;
+\twhile (qmi_wlanfw_host_cap_req_msg_v01_ei[n].data_type != QMI_EOTI)
+\t\tn++;
+\tmemcpy(nw_host_cap_ei_buf, qmi_wlanfw_host_cap_req_msg_v01_ei, n * sizeof(nw_host_cap_ei_buf[0]));
+\tnw_host_cap_ei_buf[n] = (struct qmi_elem_info){ .data_type = QMI_OPT_FLAG, .elem_len = 1, .elem_size = sizeof(u8),
+\t\t.array_type = NO_ARRAY, .tlv_type = 0x1F, .offset = offsetof(struct nw_host_cap_req, ddr_range_valid) };
+\tnw_host_cap_ei_buf[n + 1] = (struct qmi_elem_info){ .data_type = QMI_STRUCT, .elem_len = 3,
+\t\t.elem_size = sizeof(struct nw_ddr_range), .array_type = STATIC_ARRAY, .tlv_type = 0x1F,
+\t\t.offset = offsetof(struct nw_host_cap_req, ddr_range), .ei_array = nw_ddr_range_ei };
+\tnw_host_cap_ei_buf[n + 2] = (struct qmi_elem_info){ .data_type = QMI_EOTI, .array_type = NO_ARRAY,
+\t\t.tlv_type = QMI_COMMON_TLV_TYPE };
+\treturn nw_host_cap_ei_buf;
+}
+
+"""
+s = s.replace(decl, helper + decl, 1)
+start = s.index(fn)
+end = s.index('\n}\n', start)
+body = s[start:end]
+for a, b in (('\tstruct qmi_wlanfw_host_cap_req_msg_v01 req;\n',
+              '\tstruct nw_host_cap_req nw_req = {};\n#define req nw_req.base\n'),
+             ('\tret = qmi_txn_init(&ab->qmi.handle, &txn,\n\t\t\t   qmi_wlanfw_host_cap_resp_msg_v01_ei, &resp);\n',
+              '\tif (nw_wifi_ddr_range[1]) {\n\t\tint i;\n\n\t\tnw_req.ddr_range_valid = 1;\n\t\tfor (i = 0; i < 2; i++) {\n'
+              '\t\t\tnw_req.ddr_range[i].start = nw_wifi_ddr_range[2 * i];\n\t\t\tnw_req.ddr_range[i].size = nw_wifi_ddr_range[2 * i + 1];\n\t\t}\n'
+              '\t\tath11k_info(ab, "host cap ddr range %llx+%llx, %llx+%llx\\n", nw_wifi_ddr_range[0], nw_wifi_ddr_range[1],\n'
+              '\t\t\t    nw_wifi_ddr_range[2], nw_wifi_ddr_range[3]);\n\t}\n\n'
+              '\tret = qmi_txn_init(&ab->qmi.handle, &txn,\n\t\t\t   qmi_wlanfw_host_cap_resp_msg_v01_ei, &resp);\n'),
+             ('\t\t\t       QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN,\n\t\t\t       qmi_wlanfw_host_cap_req_msg_v01_ei, &req);\n',
+              '\t\t\t       QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN + 3 + 3 * 16,\n\t\t\t       nw_host_cap_ei(), &nw_req);\n')):
+    assert body.count(a) == 1, a
+    body = body.replace(a, b, 1)
+body += '\n#undef req'
+s = s[:start] + body + s[end:]
+open(path, 'w').write(s)
+PY
+grep -q 'nw_host_cap_ei(), &nw_req' $O/qmi.c || { echo "qmi.c host cap patch missed" >&2; exit 1; }
+fi
 grep -q 'nw_wifi_cpr_mv = resp.voltage_mv' $O/qmi.c || { echo "qmi.c patch missed" >&2; exit 1; }
 # The vendor host follows the SRING_SETUPs with an HTT RX_RING_SELECTION_CFG for every per-MAC data ring (qca-wifi-host-cmn li/dp_li.c
 # dp_rxdma_ring_sel_cfg_li): which frames (FP only: control BA request, unicast and multicast data) and TLVs go to the ring, the buffer

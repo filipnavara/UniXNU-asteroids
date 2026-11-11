@@ -87,4 +87,7 @@ u32 nw_wifi_cpr_mv;
 /* The firmware's MHI state words (QMI device information, vendor TLVs 0x12/0x13; 0 until it comes): link state at +0, endpoint
  * awake at +4. The board reads them around its SoC wake handshake. */
 u64 nw_wifi_mhi_pa;
+/* The host's DMA memory as the firmware is told it (QMI host capability ddr_range, icnss2's): start, size of the board's DMA
+ * window as the chip addresses it, then the MSA region. Set by the board before the module starts; 0 sends none. */
+u64 nw_wifi_ddr_range[4];
 u32 nw_wifi_mhi_size;
