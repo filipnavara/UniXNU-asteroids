@@ -1234,9 +1234,10 @@ void wifiThread(void *, wait_result_t) {
         // The firmware's last diag records after it died (and once 15 s after radio on, to see what a healthy stretch logs): 80 a
         // round, oldest first, a round every 2.5 s (the log takes 100 lines a slot).
         if (powered && !fwdEarly && pNow() >= scanAt + 13000 - 2000 && !wpssDead) {fwdEarly = true; nw_fw_diag_dump(0, 60);}
-        // The firmware's own records of the host's receive setup (htt_tgt_rx.c, wal_rx_control.c ids), once, 4 s before the scan.
+        // The firmware's own records of the host's receive setup (htt_tgt_rx.c, wal_rx_control.c ids), once, 14 s before the scan (about 6 s
+        // after radio on, away from the other dumps: the log keeps 100 lines a 2 s slot).
         static bool setupDumped;
-        if (powered && scanAt && !setupDumped && pNow() + 4000 >= scanAt) {setupDumped = true; nw_fw_diag_dump_ids(1261, 1269, 40); nw_fw_diag_dump_ids(1103, 1116, 40);}
+        if (powered && scanAt && !setupDumped && pNow() + 14000 >= scanAt) {setupDumped = true; nw_fw_diag_dump_ids(1261, 1269, 40); nw_fw_diag_dump_ids(1103, 1116, 40);}
         if (powered && idleDumps && !wpssDead && pNow() >= radioAt + (idleDumps == 2 ? 25000 : 35000)) {
             --idleDumps;
             logf(6, "wifi: %llu s after radio on, WPSS slave %x", (pNow() - radioAt) / 1000, native_wpss_stats[3]);
