@@ -10,7 +10,7 @@
 // Devicetree facts (stock 3a devicetree, qcom,wcn6750 "icnss2"): reg msi_addr 0x17110040; interrupts SPI 0x300..0x31f rising edge;
 // iommus <&apps_smmu 0x1400 0x1>; dma-coherent; the WLAN SMP2P "wlan" out state (WpssProbe.cpp).
 //
-// wifi-aj=1 joins the network of join.txt (test builds only, see joinStep). wifi=5 runs it (with the WPSS of wifi>=2). wifi-power=0 leaves the chip's RF supplies as they are. wifi-irq=1 attaches the 32 interrupt lines (otherwise the module polls them). wifi-scan=0 skips the self-test scan the board otherwise asks for once the interface is up
+// wifi-aj=1 joins the network of join.txt (test builds only, see joinStep). wifi=5 runs it (with the WPSS of wifi>=2). wifi-power=0 leaves the chip's RF supplies as they are. wifi-irq=0 leaves the interrupt lines unattached (the module then polls them every millisecond). wifi-scan=0 skips the self-test scan the board otherwise asks for once the interface is up
 // (its networks go to the log). wifi-dma=MIB sizes the DMA window (default 48).
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -1298,9 +1298,10 @@ void wifiThread(void *, wait_result_t) {
     native_wlan_stats[14] = r;
     if (r) {fail(StStarted, r); return;}
     stage(StStarted);
-    // wifi-irq=1: attach the vectors the module asked for (nw_wifi_irq_vectors) as GIC SPIs, otherwise the module polls its interrupt
-    // lines every millisecond. wifi-irq-poll=MS: with interrupts, still give every handler a turn every MS ms (default 20; 0 never).
-    unsigned wantIrqs = 0, irqPoll = 20;
+    // The vectors the module asked for (nw_wifi_irq_vectors) are attached as GIC SPIs (wifi88: 16 of 32; the worker's rounds fell from
+    // ~1000/s to 6-150/s); wifi-irq=0 leaves them unattached and the module polls its interrupt lines every millisecond.
+    // wifi-irq-poll=MS: with interrupts, still give every handler a turn every MS ms (default 20; 0 never).
+    unsigned wantIrqs = 1, irqPoll = 20;
     PE_parse_boot_argn("wifi-irq", &wantIrqs, sizeof wantIrqs);
     PE_parse_boot_argn("wifi-irq-poll", &irqPoll, sizeof irqPoll);
     const uint32_t irqVectors = nw_wifi_irq_vectors();
