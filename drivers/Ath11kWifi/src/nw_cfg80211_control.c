@@ -210,7 +210,7 @@ static int associate(struct cfg80211_registered_device *rdev, const struct nw_co
   cfg80211_put_bss(&rdev->wiphy, assoc_request.bss);
   return result;
 }
-static int set_key(struct cfg80211_registered_device *rdev, const struct nw_control_view *request) {
+static int set_key_request(struct cfg80211_registered_device *rdev, const struct nw_control_view *request) {
   uint32_t index, flags, cipher;
   if (nw_control_get_u32(request, NW_CONTROL_ATTR_KEY_INDEX, &index) ||
       nw_control_get_u32(request, NW_CONTROL_ATTR_KEY_FLAGS, &flags) ||
@@ -235,6 +235,18 @@ static int set_key(struct cfg80211_registered_device *rdev, const struct nw_cont
     result = rdev->ops->set_default_key ? rdev_set_default_key(rdev, primary, -1, index, false, true) : -EOPNOTSUPP;
   if (!result && (flags & NW_CONTROL_KEY_DEFAULT_MGMT))
     result = rdev->ops->set_default_mgmt_key ? rdev_set_default_mgmt_key(rdev, primary, -1, index) : -EOPNOTSUPP;
+  return result;
+}
+/* Every key request with its result in the log (index, pairwise or group, cipher, key length, flags; never the key). */
+static int set_key(struct cfg80211_registered_device *rdev, const struct nw_control_view *request) {
+  uint32_t index = 0, flags = 0, cipher = 0; size_t length = 0;
+  nw_control_get_u32(request, NW_CONTROL_ATTR_KEY_INDEX, &index);
+  nw_control_get_u32(request, NW_CONTROL_ATTR_KEY_FLAGS, &flags);
+  nw_control_get_u32(request, NW_CONTROL_ATTR_CIPHER, &cipher);
+  nw_control_get(request, NW_CONTROL_ATTR_KEY, &length);
+  const int result = set_key_request(rdev, request);
+  lx_log(6, "wifi: key %s index %u cipher %08x length %zu flags %x: %d", flags & NW_CONTROL_KEY_PAIRWISE ? "pairwise" : "group", index, cipher,
+         length, flags, result);
   return result;
 }
 static int request_locked(struct cfg80211_registered_device *rdev, const struct nw_control_view *request, struct nw_control_builder *reply) {
