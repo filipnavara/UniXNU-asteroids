@@ -23,6 +23,7 @@
 
 void nw_board_qrtr_start(void);
 extern u64 nw_wifi_ddr_range[6];
+extern u64 nw_wifi_mhi_pa;
 void nw_wifi_cpr_report(u32 mv);
 
 struct icnss_priv *penv;
@@ -79,6 +80,7 @@ static int event_server_arrive(struct icnss_priv *priv, void *data) {
   icnss_pr_dbg("Non-Secured Bar Address pa: %pa, va: 0x%pK\n", &priv->mem_base_pa, priv->mem_base_va);
   if (priv->mhi_state_info_pa) priv->mhi_state_info_va = lx_ioremap(priv->mhi_state_info_pa, PAGE_SIZE);
   if (!priv->mhi_state_info_va) icnss_pr_err("Ioremap failed for MHI info address\n");
+  nw_wifi_mhi_pa = priv->mhi_state_info_pa;   /* the board reads the MHI state words around its own diagnostics */
   if (priv->bdf_download_support) {
     icnss_wlfw_bdf_dnld_send_sync(priv, ICNSS_BDF_REGDB);
     ret = icnss_wlfw_bdf_dnld_send_sync(priv, priv->ctrl_params.bdf_type);

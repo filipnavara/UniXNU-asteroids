@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Compile the WiFi module (drivers/Ath11kWifi: ath11k on the WCN6750's hybrid bus) to kernel objects for the board build.
 Usage: build-ath11k-wifi.py <module dir> <output dir>
-Prints one line "OBJ <path>" per object. sheng's build-ath12k-wifi.py (UniXNU-sheng 516a780) for the ath11k tree: the module fetches its pinned
+Prints one line "OBJ <path>" per object. NW_WIFI_RUNTIME_ONLY=1: only the runtime (no ath11k, mac80211 or their glue), unrenamed
+raw objects (build-qcacld-wifi.py links them with the qcacld objects and renames all of them together). sheng's build-ath12k-wifi.py (UniXNU-sheng 516a780) for the ath11k tree: the module fetches its pinned
 public sources with tools/fetch-sources.sh and lays out its generated include trees with tools/prepare.sh and tools/prepare-ath11k.sh first."""
 import hashlib, json, shlex, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
@@ -32,12 +33,17 @@ trees.update({name: ['-I', str(module / 'out' / name)] for name in ('mac80211', 
 trees['generated'] = trees['cfg80211']
 trees['crypto'] = ['-I', str(module / 'shim/crypto'), '-I', str(module / 'out/crypto')]
 
+import os
+runtime_only = os.environ.get('NW_WIFI_RUNTIME_ONLY') == '1'
+ath11k_glue = {'src/nw_ahb.c', 'src/nw_wifi.c', 'src/nw_debug.c', 'src/nw_crypto_mac80211.c', 'src/nw_fils.c'}
 jobs = []
 for line in (module / 'tools/sources.txt').read_text().splitlines():
     line = line.strip()
     if not line or line.startswith('#'):
         continue
     tree, _, name = line.partition(':') if ':' in line else ('', '', line)
+    if runtime_only and (tree in ('ath11k', 'mac80211') or name in ath11k_glue):
+        continue
     if tree == 'ath11k':
         src = module / 'out/ath11k-src' / name
     elif tree == 'qmi':
@@ -81,17 +87,14 @@ def build(job):
 
 with ThreadPoolExecutor(8) as pool:
     raw_objects = list(pool.map(build, jobs))
+if runtime_only:
+    for o in raw_objects:
+        print(f'OBJ {o}')
+    raise SystemExit
 
 # The module's global names (sock_release, kernel_sendmsg, ...) are common in a kernel: give every one the prefix nwk_ except the entry points the board uses.
-keep = {'_nw_wifi_start', '_nw_wifi_step', '_nw_wifi_stop', '_nw_wifi_stats', '_nw_wifi_set_events', '_nw_wifi_scan', '_nw_wifi_bss_count',
-        '_nw_wifi_bss_get', '_nw_wifi_connect', '_nw_wifi_disconnect', '_nw_wifi_tx', '_nw_wifi_status_get', '_nw_wifi_where',
-        '_nw_wifi_power',
-        '_nw_wifi_tx_packet', '_nw_wifi_link_state',
-        '_nw_wifi_tx_reasons', '_nw_wifi_buffer_stats_get', '_nw_wifi_buffer_pool_configure', '_nw_wifi_buffer_pool_trim',
-        '_nw_wifi_irq_mode', '_nw_wifi_irq_pending', '_nw_wifi_wait_ms', '_nw_wifi_poll'}
-keep.update({'_nw_wifi_control_transport_set', '_nw_wifi_control_attach', '_nw_wifi_control_detach',
-             '_nw_wifi_control_receive', '_nw_wifi_control_writable', '_nw_wifi_control_stats_get'})
-keep.update({'_nw_wifi_set_platform', '_nw_wifi_threads_wanted', '_nw_wifi_qrtr_rx', '_nw_wifi_qrtr_down', '_nw_wifi_cpr_mv', '_nw_wifi_mhi_pa', '_nw_wifi_ddr_range', '_nw_wifi_wmi_mem', '_nw_wifi_wmi_vendor', '_nw_wifi_fse', '_nw_wifi_idle_ps', '_nw_wifi_dp_vendor', '_nw_wifi_qmi_vendor', '_nw_wifi_ddr_type', '_nw_wifi_mhi_size', '_nw_wifi_self_scan', '_nw_wifi_scan_mask', '_nw_wifi_rx_state', '_nw_wifi_rx_buf_probe', '_nw_fw_diag_dump', '_nw_fw_diag_dump_ids', '_nw_fw_wmi_dump', '_nw_wifi_reg_check', '_nw_wifi_idle_check', '_nw_wifi_reg_snapshot', '_nw_wifi_vendor_regs', '_nw_wifi_vendor_config', '_nw_wifi_reg_log', '_nw_wifi_fw_log_verbose', '_nw_wifi_fw_log_early_on', '_nw_wifi_data_path_poll'})
+from wifi_entry_points import KEEP
+keep = set(KEEP)
 objs = [o for _, o, _ in jobs]
 names = set()
 llvm = Path(subprocess.run(['brew', '--prefix', 'llvm'], check=True, capture_output=True, text=True).stdout.strip()) / 'bin'

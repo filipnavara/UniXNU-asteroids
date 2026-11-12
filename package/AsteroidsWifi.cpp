@@ -1250,6 +1250,10 @@ void wifiThread(void *, wait_result_t) {
             if (awake) {
                 nw_wifi_reg_check("before the votes");
                 {int32_t v[3]; const int voted = asteroids_wpss_vrm(v); if (voted) logf(6, "wifi: supply votes smpb3 %d smpb1 %d smpb2 %d", v[0], v[1], v[2]);}
+            }
+            // The qcacld module (it wants threads) sends the SoC wake / EP power save messages itself through its icnss backend
+            // (nw_board.smp2p_send, with icnss2's sequence numbers): the board's own handshake is for ath11k only.
+            if (awake && !threads) {
                 logSmp2p("before");
                 const int32_t ep = asteroids_wpss_smp2p_send(2, 7);
                 logf(6, "wifi: ep power save exit %x", ep);

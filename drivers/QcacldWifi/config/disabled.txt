@@ -49,3 +49,8 @@ CONFIG_BUS_AUTO_SUSPEND
 CONFIG_FEATURE_MEMDUMP_ENABLE
 CONFIG_WLAN_FEATURE_FIPS
 CONFIG_WLAN_FEATURE_MIB_STATS
+# Log levels compiled out (strings: the kernelcache has a fixed hole for the kernel's __TEXT; warnings, errors and fatal stay)
+CONFIG_WLAN_LOG_DEBUG
+CONFIG_WLAN_LOG_INFO
+CONFIG_WLAN_LOG_ENTER
+CONFIG_WLAN_LOG_EXIT

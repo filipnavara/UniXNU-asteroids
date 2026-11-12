@@ -611,4 +611,9 @@ int of_fdt_get_ddrtype(void);   /* the board's DDR type (icnss2 sends it in the 
 #define aes_decrypt lx_linux_aes_decrypt
 #define aes_preparekey lx_linux_aes_preparekey
 #define aes_prepareenckey lx_linux_aes_prepareenckey
+
+/* ---- module init: callable as lx_init_<fn> (the module entry, src/nw_qcacld.c, starts qcacld with lx_init_hdd_module_init) ---- */
+#undef module_init
+#define module_name(m) KBUILD_MODNAME   /* the module is not a loadable one: its build name */
+#define module_init(f) int lx_init_##f(void) { return f(); }
 #endif
