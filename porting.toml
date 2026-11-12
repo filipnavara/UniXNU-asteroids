@@ -4,7 +4,7 @@ schema_version = 1
 name = "asteroids"
 soc = "SM7635"
 os_profile = "ipados-17.7.11-21H461"
-summary = "Nothing Phone (3a) boots iPadOS 27.0.1 (24A446, the iPad17,3 images) from its UFS userdata partition to the home screen, with touch, buttons, the GPU add-on (Turnip and Metal on the Adreno 810), system apps, icons and the wallpaper (2026-11-11); iPadOS 17.7.11 (21H461) remains the board's default profile. Shared SM7635 support and board-owned storage, GPU, input and power integration. Wi-Fi (WCN6750) is in bring-up on the asteroids-wifi branch. Bring-up runs as numbered staged tests."
+summary = "Nothing Phone (3a) boots iPadOS 27.0.1 (24A446, the iPad17,3 images) from its UFS userdata partition to the home screen, with touch, buttons, the GPU add-on (Turnip and Metal on the Adreno 810), system apps, icons and the wallpaper (2026-11-11); iPadOS 17.7.11 (21H461) remains the board's default profile. Shared SM7635 support and board-owned storage, GPU, input and power integration. Wi-Fi (WCN6750, Linux ath11k on the WPSS) joins a WPA2 network, gets an address over DHCP and passes traffic, with interrupts and wifid (2026-11-13). Bring-up runs as numbered staged tests."
 
 [[area]]
 id = "configuration"
@@ -168,8 +168,8 @@ configuration = ["QcomPmicRtc (UniXNU fork) publishes IORTC with IORTCReadOnly; 
 procedure = ["Boot, set the time in Settings > Date & Time, restart, and compare the clock; the banner's RTC row shows the counter, restores and stores."]
 findings = ["T39: the counter reads (plat 3, pmic 5); no set reached the kernel while timed hung.", "T39d/T39e: timed hung in gethostuuid() without a platform UUID; with the platform seed in the ADT it answers, and a time set in Settings survives a restart."]
 completion = ["The wall clock is right after every boot without a network."]
-limits = ["No automatic time (no network or GNSS time source yet)."]
-next_action = ["Propose the IORTC forwarding and the RTC drivers upstream once stable."]
+limits = ["On iPadOS 27 the kernel has no QcomPmicRtc (it is linked and matched only in the iPadOS 17 kernel): network time sets the clock (wifi90) but is not kept across a restart."]
+next_action = ["Link and start QcomPmicRtc in the iPadOS 27 kernel (the offset store is ported: patches/xnu-12377/zzzzzzzzzd-board-rtc-offset.patch); propose the IORTC forwarding and the RTC drivers upstream once stable."]
 
 [[area.evidence]]
 kind = "device"
@@ -180,16 +180,16 @@ result = "T39e: the time set in Settings survived a restart; Settings > Date & T
 
 [[area]]
 id = "network"
-status = "planned"
-components = []
-paths = ["package/Wifi*"]
-inputs = ["The 3a's Wi-Fi and Bluetooth module; not yet identified for a driver."]
-configuration = ["None yet."]
-procedure = ["Identify the module and its bus from the live device tree."]
-findings = ["No network driver runs; bluetoothd is disabled.", "Wi-Fi bring-up (asteroids-wifi branch, 2026-11-12): the chip is a WCN6750 on the WPSS, driven by a port of Linux ath11k (drivers/Ath11kWifi). The WPSS boots through PAS, SMP2P, GLINK and QRTR; QMI completes; HTC, WMI and HTT come up and the radio turns on (SMMU stream 0x1401 in pass-through, a board-made MAC address, IMPS off). The firmware asserts 0.5-2 s into the first scan (whalRxMpduPop, the wal_monitor stall watchdog or whalRecvDmaLeakRecovery), while the same firmware scans cleanly under Qualcomm's own driver on the stock kernel. Every host difference seen (QMI, WMI, HTT, 1441 data-path registers, SMMU, supplies, power votes) was tested without effect."]
-completion = ["The device joins a network and passes traffic."]
-limits = ["No working network: Wi-Fi scans fail with a firmware assert; Bluetooth is not started."]
-next_action = ["Port Qualcomm's own host driver (qcacld) in place of ath11k, starting with a build-only spike."]
+status = "implemented"
+components = ["Ath11kWifi"]
+paths = ["package/Wifi*", "package/AsteroidsWifi.cpp", "package/WpssProbe.cpp", "drivers/Ath11kWifi/**", "drivers/QcacldWifi/**", "scripts/*wifi*", "scripts/*qcacld*", "dts/asteroids.dts"]
+inputs = ["The WCN6750 behind the WPSS (the vendor's wpss.mdt, regdb and board data from vendor_b), its 32 kHz sleep clock on PMK8550 GPIO5, and the network's name and key for test images (UNIXNU_WIFI_JOIN, never committed)."]
+configuration = ["wifi=5 starts the WPSS (PAS, SMP2P, GLINK, QRTR) and the module: Linux ath11k, mac80211 and cfg80211 over drivers/Ath11kWifi's runtime, wpa_supplicant for WPA2. WifiNet (sheng's, unchanged) gives iOS en0 and the Apple80211 requests; the dts exports a wlan node so launchd starts wifid.", "AsteroidsWifi.cpp enables the sleep clock (wifi-sleepclk), attaches the 16 MSI vectors ath11k uses as GIC SPIs (wifi-irq=0 polls every millisecond instead) and keeps a 20 ms backstop poll (wifi-irq-poll). wifi-aj=1 joins the network of the Data add-on's join.txt; wifi-idle-ps=1 lets the firmware use IMPS."]
+procedure = ["Build a join image with UNIXNU_WIFI_JOIN and wifi-aj=1, fastboot boot it, pull the log; the wifi-net rows show the join, DHCP, en0 address and packet counts, the wifi: load row the worker's rounds and interrupts per second."]
+findings = ["The firmware's scan asserts (whalRxMpduPop, wal_monitor, whalRecvDmaLeakRecovery) were the missing WCN sleep clock: UEFI leaves PMK8550 GPIO5 off; with it on, IMPS works and scans complete (wifi78).", "Association and WPA2 work (wifi79). Broadcast and multicast frames were dropped as unprotected until ath11k rebuilt their IV from the descriptor's PN words: the WCN6750 stores no IV for decrypted group frames (wifi87).", "wifi87/88: DHCP from iOS's own client (192.168.1.148), IPv4/IPv6/ARP traffic both ways (35k packets in by 280 s in wifi89). The one remaining mac80211 drop (0x1000f) is the AP relaying the station's own broadcasts.", "Interrupts (wifi88): 16 of 32 vectors fit ArmCpu's 24 SPI slots; the worker went from about 1000 to 6-150 rounds per second.", "wifid (wifi89/90): with the wlan node, wifid opens en0's Apple80211 interface; iOS then sets the clock from the network about 3 minutes after boot. Whether the status bar shows Wi-Fi is not yet seen (GPU stalls froze both boots).", "qcacld (Qualcomm's host driver) builds on an icnss backend but does not fit the kernelcache's code window (about 2.3 MB over); parked in drivers/QcacldWifi."]
+completion = ["The device joins a network and passes traffic.", "Settings shows and controls Wi-Fi, and the status bar shows it."]
+limits = ["The network is joined by the board (wifi-aj with the build's join.txt), not yet from Settings. Several Apple80211 requests of wifid are unanswered. Bluetooth is not started."]
+next_action = ["Check the status bar and Settings' Wi-Fi page on a boot without GPU stalls; answer the Apple80211 requests wifid still gets 102 for; join from Settings."]
 evidence = []
 
 [[area]]
