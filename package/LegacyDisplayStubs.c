@@ -175,6 +175,17 @@ native_gpu_trace_record (uint32_t event, uint32_t pid, const uint64_t *values, u
   (void)count;
 }
 
+/* Upstream Adreno740's pool views (NativeAdrenoPublish.cpp) ask the kernel to report a device pager's close; only UniXNU's macOS
+ * kernel has the hook (gpupool-device-pager-close.patch). The board registers no such pool, so no view is made: refuse. */
+BOARD_STANDIN int
+iokit_physical_descriptor_close_notify (void *descriptor, void (*closed)(void *), void *context)
+{
+  (void)descriptor;
+  (void)closed;
+  (void)context;
+  return 5; /* KERN_FAILURE: the view is not tracked */
+}
+
 /* iPadOS 17's boot progress kit (BootFaultProbe.c) records the caller stack; iOS 27 has no such kit: no frames. */
 BOARD_STANDIN unsigned
 boot_progress_caller_stack (uint64_t *out, unsigned limit, uint64_t *slide)
