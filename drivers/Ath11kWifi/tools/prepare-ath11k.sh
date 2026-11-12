@@ -585,4 +585,25 @@ s = s.replace(old, '\t{\n\t\textern void nw_wifi_fw_log_early(struct ath11k_base
 open(path, 'w').write(s)
 PY
 grep -q 'nw_wifi_fw_log_early(ab);' $O/dp_rx.c || { echo "dp_rx.c early fw log patch missed" >&2; exit 1; }
+# The vendor's HTT SRING_SETUP is 14 words (fw-api htt_sring_setup_t: word 13 ipa_drop_low/high_threshold); ath11k's struct has 13, and
+# the WCN6750 vendor firmware logs the host's setups as 52 bytes against the vendor host's 56. nw_wifi_dp_vendor bit 64 sends the
+# vendor's length with the extra word zero (the copy of dp_tx.c).
+rm -f $O/dp_tx.c
+python3 - "$A/dp_tx.c" "$O/dp_tx.c" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+fn = 'int ath11k_dp_tx_htt_srng_setup(struct ath11k_base *ab, u32 ring_id,\n'
+i = s.index(fn); j = s.index('\n}\n', i)
+body = s[i:j]
+for a, b in (('\tint len = sizeof(*cmd);\n',
+              '\textern unsigned nw_wifi_dp_vendor;\n\tint len = sizeof(*cmd) + ((nw_wifi_dp_vendor & 64) ? 4 : 0);\n'),
+             ('\tskb_put(skb, len);\n\tcmd = (struct htt_srng_setup_cmd *)skb->data;\n',
+              '\tskb_put(skb, len);\n\tmemset(skb->data, 0, len);\n\tcmd = (struct htt_srng_setup_cmd *)skb->data;\n')):
+    assert body.count(a) == 1, a
+    body = body.replace(a, b, 1)
+s = s[:i] + body + s[j:]
+open(dst, 'w').write(s)
+PY
+grep -q 'nw_wifi_dp_vendor & 64' $O/dp_tx.c || { echo "dp_tx.c srng setup patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"

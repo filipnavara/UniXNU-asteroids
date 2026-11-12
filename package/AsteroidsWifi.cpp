@@ -1147,7 +1147,8 @@ void wifiThread(void *, wait_result_t) {
     PE_parse_boot_argn("wifi-fse", &fse, sizeof fse);
     nw_wifi_fse = fse;
     // wifi-dp-vendor=MASK: the vendor host's data path (1 no PPDU stats request, 2 REO routing registers, 4 ring selection/FSE after
-    // all rings, 8 no per-vdev decap/encap), 0 ath11k's.
+    // all rings, 8 no per-vdev decap/encap, 16 vendor idle WBM/REO state, 32 all differing vendor REO/WBM/TCL config, 64 14-word HTT
+    // SRING_SETUP as the vendor sends it), 0 ath11k's.
     unsigned dpVendor = 0;
     PE_parse_boot_argn("wifi-dp-vendor", &dpVendor, sizeof dpVendor);
     nw_wifi_dp_vendor = dpVendor;
