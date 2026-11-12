@@ -43,6 +43,8 @@ extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message);
 extern "C" int32_t asteroids_wpss_soc_wake_in(void);
 extern "C" int asteroids_wpss_aop(const char *message);
 extern "C" int32_t asteroids_wpss_aop_result(void);
+extern "C" int asteroids_wpss_postmortem(void);
+extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *out, uint32_t words);
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
@@ -964,6 +966,105 @@ void logNetworks() {
     IOFreeData(bss, sizeof(struct nw_bss_info));
 }
 
+// ---- the post-mortem of the WLAN firmware (wifi-postmortem=1) ----
+// The firmware asserts in whal_recv.c whalRxMpduPop:6920 when a receive ring entry names the same buffer as the entry before it (see
+// the notes: ring pop 0x14ccd0 with 32-byte entries; each ring's context in a table of 64 at 0xc06b6b44, the last entry at +0x94 and
+// the last buffer's address (firmware virtual) at +0x210; DMA addresses become virtual through 21 regions of 0x28 bytes at 0xc0b73f88:
+// virtual address +0, DMA base +8 (64-bit), size +0x10). After the PAS shutdown hands the carveout back, this reads those: the regions,
+// every ring context, the entries around each ring's last one and the buffer it named, in four rounds (the log keeps 100 lines a slot).
+struct PmRegion {uint32_t va, size; uint64_t base;};
+PmRegion gPmRegions[21];
+struct PmRing {unsigned id; uint32_t ctx, entry, buffer;};
+PmRing gPmRings[8];
+unsigned gPmRingCount;
+// Reads words at a firmware virtual address: the image's own segments, else through the regions (a DMA address in the carveout, or in
+// this side's DMA window).
+bool pmRead(uint32_t va, uint32_t *out, uint32_t words) {
+    if (!asteroids_wpss_pm_read(va, 0, out, words)) return true;
+    for (const PmRegion &r : gPmRegions) {
+        if (!r.size || va < r.va || va - r.va + 4ull * words > r.size) continue;
+        const uint64_t dma = r.base + (va - r.va);
+        if (!asteroids_wpss_pm_read(dma, 1, out, words)) return true;
+        if (gArena.va && dma >= gArena.iova && dma + 4ull * words <= gArena.iova + gArena.bytes && !(dma & 3)) {
+            const volatile uint32_t *from = reinterpret_cast<const volatile uint32_t *>(gArena.va + (dma - gArena.iova));
+            for (uint32_t k = 0; k < words; ++k) out[k] = from[k];
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+// Which region holds a DMA address (the entries' buffer addresses), as the firmware's virtual address; 0xdeadc0d1 like the firmware.
+uint32_t pmVirtual(uint64_t dma) {
+    for (const PmRegion &r : gPmRegions) if (r.size && dma >= r.base && dma - r.base < r.size) return r.va + (uint32_t)(dma - r.base);
+    return 0xdeadc0d1u;
+}
+void pmWords(const char *what, uint32_t va, unsigned words) {
+    uint32_t w[6];
+    for (unsigned at = 0; at < words; at += 6) {
+        const unsigned n = words - at < 6 ? words - at : 6;
+        if (!pmRead(va + 4 * at, w, n)) {logf(4, "wifi: pm %s %x: not readable", what, va + 4 * at); return;}
+        char line[96]; int k = 0;
+        for (unsigned i = 0; i < n; ++i) k += snprintf(line + k, sizeof line - k, " %08x", w[i]);
+        logf(6, "wifi: pm %s %x:%s", what, va + 4 * at, line);
+    }
+}
+// One round; returns false when there is nothing more.
+bool pmRound(unsigned round) {
+    if (round == 0) {
+        nw_wifi_idle_check("after the fatal error");
+        uint32_t w[21 * 10];
+        if (asteroids_wpss_pm_read(0xc0b73f88u, 0, w, 21 * 10)) {logf(3, "wifi: pm regions not readable"); return false;}
+        for (unsigned i = 0; i < 21; ++i) {
+            const uint32_t *e = w + 10 * i;
+            gPmRegions[i] = {e[0], e[4], (uint64_t)e[2] | (uint64_t)e[3] << 32};
+            if (e[4]) logf(6, "wifi: pm region %u: va %08x dma %llx size %x | %08x %08x %08x", i, e[0],
+                           (unsigned long long)gPmRegions[i].base, e[4], e[1], e[5], e[6]);
+        }
+        return true;
+    }
+    if (round == 1) {
+        uint32_t table[64];
+        if (asteroids_wpss_pm_read(0xc06b6b44u, 0, table, 64)) {logf(3, "wifi: pm ring table not readable"); return false;}
+        unsigned shown = 0;
+        for (unsigned id = 0; id < 64; ++id) {
+            if (!table[id]) continue;
+            uint32_t last = 0, buffer = 0, count = 0;
+            const bool ok = pmRead(table[id] + 0x94, &last, 1) && pmRead(table[id] + 0x210, &buffer, 1);
+            pmRead(table[id] + 0x108, &count, 1);
+            if (shown++ < 40) logf(6, "wifi: pm ring %u ctx %08x: last entry %08x buffer %08x count %x%s", id, table[id], last, buffer, count,
+                                   ok ? "" : " (not readable)");
+            if (ok && last && buffer && gPmRingCount < 8) gPmRings[gPmRingCount++] = {id, table[id], last, buffer};
+        }
+        logf(6, "wifi: pm %u ring contexts, %u with a last entry", shown, gPmRingCount);
+        return gPmRingCount != 0;
+    }
+    if (round == 2) {
+        // the entries around the last popped one (32 bytes each): 4 before, it, 3 after; the first two words are the buffer's DMA address
+        for (unsigned r = 0; r < gPmRingCount && r < 4; ++r) {
+            const PmRing &ring = gPmRings[r];
+            for (int k = -4; k <= 3; ++k) {
+                const uint32_t at = ring.entry + 32 * k;
+                uint32_t e[8];
+                if (!pmRead(at, e, 8)) {logf(4, "wifi: pm ring %u entry %x: not readable", ring.id, at); continue;}
+                logf(6, "wifi: pm ring %u entry %+d %x: %08x %08x>%08x %08x %08x", ring.id, k, at, e[0], e[1],
+                     pmVirtual((uint64_t)e[0] | (uint64_t)(e[1] & 0xff) << 32), e[2], e[3]);
+                logf(6, "wifi: pm ring %u entry %+d %x: .. %08x %08x %08x %08x", ring.id, k, at, e[4], e[5], e[6], e[7]);
+            }
+        }
+        return true;
+    }
+    if (round == 3) {
+        for (unsigned r = 0; r < gPmRingCount && r < 4; ++r) {
+            char what[24];
+            snprintf(what, sizeof what, "ring %u buffer", gPmRings[r].id);
+            pmWords(what, gPmRings[r].buffer, 32);
+        }
+        return false;
+    }
+    return false;
+}
+
 void wifiThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "wifi");
     stage(StThread);
@@ -1123,6 +1224,21 @@ void wifiThread(void *, wait_result_t) {
             nw_fw_diag_dump(fwdLeft, 80);
             fwdAt = pNow() + 2500;
         }
+        // wifi-postmortem=1: once the diag records are out, the firmware's receive ring state from its memory (pmRound), a round each 2.5 s.
+        static unsigned postmortem = 2;
+        if (postmortem == 2) {postmortem = 0; PE_parse_boot_argn("wifi-postmortem", &postmortem, sizeof postmortem);}
+        static int pmRoundNext = -1;
+        static uint64_t pmAt;
+        if (postmortem && wpssDead && !fwdLeft && pmRoundNext < 0 && pNow() >= fwdAt) {
+            pmRoundNext = 0; pmAt = pNow() + 2500;
+            logf(6, "wifi: pm carveout asked: %d", asteroids_wpss_postmortem());
+        }
+        if (pmRoundNext >= 0 && pmRoundNext < 8 && pNow() >= pmAt) {
+            pmAt = pNow() + 2500;
+            const int state = asteroids_wpss_postmortem();
+            if (state != 2) {logf(state < 0 ? 3 : 6, "wifi: pm carveout state %d", state); if (state < 0) pmRoundNext = 8;}
+            else pmRoundNext = pmRound((unsigned)pmRoundNext) ? pmRoundNext + 1 : 8;
+        }
         // wifi-scan=2: the scan in three parts (2.4 GHz, 5 GHz without radar detection, 5 GHz radar channels), 3 s apart, to see which
         // the firmware does not survive.
         if (powered && selfScan == 2 && scanAsked && scanStage && scanStage < 3 && nextStageAt && pNow() >= nextStageAt) {
@@ -1137,6 +1253,7 @@ void wifiThread(void *, wait_result_t) {
             if (selfScan == 2) {nw_wifi_scan_mask = 1; scanStage = 1;}
             nw_wifi_rx_buf_probe(0);  // which receive buffers the chip writes from here on
             nw_wifi_reg_check("before the scan");
+            nw_wifi_idle_check("before the scan");
             // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
             const int s = nw_wifi_self_scan();
             native_wlan_stats[11] = native_wlan_stats[11] + 1;

@@ -260,6 +260,21 @@ void serviceAop() {
     gAopResult = R::qmp(gAop);
     gAopPending = 0;
 }
+// The post-mortem (the board's wifi-postmortem): once the WPSS died, a PAS shutdown hands its carveout back to this side, as Linux's
+// recovery does before its coredump, and the firmware's memory is read by its virtual addresses. gPmState: 1 asked, 2 readable,
+// negative failed.
+volatile int gPmState;
+IOMemoryMap *gPmMap;
+volatile uint8_t *gPmVa;
+void servicePostmortem() {
+    if (gPmState != 1) return;
+    R::pasShutdown(kPasWpss);
+    IODeviceMemory *memory = IODeviceMemory::withRange(kWpssBase, kWpssSize);
+    gPmMap = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (memory) memory->release();
+    gPmVa = gPmMap ? reinterpret_cast<volatile uint8_t *>(gPmMap->getVirtualAddress()) : nullptr;
+    gPmState = gPmVa ? 2 : -12;
+}
 void serviceGlink() {
     if (!gGlinkStarted) return;
     if (!gGlink.rx.data) {
@@ -472,7 +487,7 @@ extern "C" void asteroids_wpss_run(void) {
     startGlink();
 }
 
-extern "C" void asteroids_wpss_service(void) {serviceAop(); service();}
+extern "C" void asteroids_wpss_service(void) {serviceAop(); servicePostmortem(); service();}
 extern "C" int asteroids_wpss_aop(const char *message) {
     if (gAopPending) return -16;
     strlcpy(gAop, message, sizeof gAop);
@@ -482,6 +497,25 @@ extern "C" int asteroids_wpss_aop(const char *message) {
     return 0;
 }
 extern "C" int32_t asteroids_wpss_aop_result(void) {return gAopPending ? 1 : gAopResult;}
+// The post-mortem from the WLAN worker: asks for the carveout once (after the WPSS reported a fatal error) and returns gPmState.
+extern "C" int asteroids_wpss_postmortem(void) {
+    if (!gPmState && gRunning && (gSlave & kFatal)) {gPmState = 1; R::wakeWpss();}
+    return gPmState;
+}
+// Words of the dead firmware's memory: at its virtual address (physical 0: the image's segment map, 0xfe000000.. and 0xc0000000..), or at a
+// physical address inside the carveout (physical 1). 0, -1 outside, -19 before the carveout is back.
+extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *out, uint32_t words) {
+    if (gPmState != 2) return -19;
+    uint64_t pa = 0;
+    if (physical) pa = address;
+    else if (address >= 0xfe000000u && address < 0xfe074000u) pa = address - 0xfe000000u + 0x9bb00000u;
+    else if (address >= 0xc0000000u && address < 0xc15de000u) pa = address - 0xc0000000u + 0x9bc00000u;
+    else return -1;
+    if (pa < kWpssBase || pa + 4ull * words > kWpssBase + kWpssSize || (pa & 3)) return -1;
+    const volatile uint32_t *from = reinterpret_cast<const volatile uint32_t *>(gPmVa + (pa - kWpssBase));
+    for (uint32_t i = 0; i < words; ++i) out[i] = from[i];
+    return 0;
+}
 extern "C" int asteroids_wpss_pending(void) {return gRunning && gCount != 0;}
 
 // ---- the router link for the WiFi module (wifi=5): raw QRTR packets both ways ----

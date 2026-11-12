@@ -51,6 +51,7 @@ int nw_wifi_self_scan(void);
 void nw_wifi_rx_state(char *text, int size);
 void nw_fw_diag_dump(unsigned skip, unsigned count);  /* logs the firmware's last diag records (see src/nw_debug.c) */
 void nw_wifi_reg_check(const char *when);  /* reads the host-programmed ring registers back and logs the ones that differ */
+void nw_wifi_idle_check(const char *when);  /* the WBM idle list: link descriptors listed twice or outside the banks */
 int nw_wifi_fw_log_verbose(void);  /* asks the firmware for its WAL, WHAL, RX and DATA_TXRX modules' verbose log */
 void nw_wifi_data_path_poll(unsigned ms);  /* the polled data path interrupt groups every ms milliseconds (0: every round) */
 void nw_wifi_rx_buf_probe(int compare);  /* 0 remembers the posted receive buffers, 1 logs which the chip wrote since */

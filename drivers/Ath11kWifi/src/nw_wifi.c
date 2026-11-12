@@ -134,6 +134,51 @@ void nw_wifi_reg_check(const char *when) {
            ath11k_hif_read32(ab, s->hwreg_base[HAL_SRNG_REG_GRP_R2] + 4), reg, ath11k_hif_read32(ab, reg), (u32)s->ring_base_paddr);
   }
 }
+/* The WBM idle list (worker only): the link descriptor addresses the host listed in the WBM idle ring, sorted, to find one listed twice
+ * (the firmware asserts in whalRxMpduPop when two receive entries name the same link descriptor) and any outside the link descriptor
+ * banks; then the banks. */
+static void nw_sift_u64(u64 *a, u32 r, u32 n) {
+  for (;;) { u32 c = 2 * r + 1; if (c >= n) return; if (c + 1 < n && a[c + 1] > a[c]) c++; if (a[r] >= a[c]) return;
+    u64 t = a[r]; a[r] = a[c]; a[c] = t; r = c; }
+}
+static void nw_sort_u64(u64 *a, u32 n) {  /* heap sort */
+  for (u32 start = n / 2; start > 0;) nw_sift_u64(a, --start, n);
+  for (u32 end = n; end > 1;) { end--; u64 t = a[0]; a[0] = a[end]; a[end] = t; nw_sift_u64(a, 0, end); }
+}
+void nw_wifi_idle_check(const char *when) {
+  if (!g_hw) return;
+  struct ath11k *ar = g_hw->priv; struct ath11k_base *ab = ar->ab; struct dp_srng *idle = &ab->dp.wbm_idle_ring;
+  if (!idle->vaddr) return;
+  struct hal_srng *s = &ab->hal.srng_list[idle->ring_id];
+  const u32 esz = s->entry_size ? s->entry_size : 2, n = s->num_entries;
+  const u32 *w = s->ring_base_vaddr;
+  u64 *a = vmalloc((size_t)n * sizeof(u64));
+  if (!a || !w) { lx_log(3, "wifi: idle list %s: no memory", when); if (a) vfree(a); return; }
+  u32 zero = 0, outside = 0, used = 0; u64 first_out = 0;
+  for (u32 i = 0; i < n; i++) {
+    const u64 addr = (u64)w[i * esz] | (u64)(w[i * esz + 1] & 0xff) << 32;
+    if (!addr) { zero++; continue; }
+    int in = 0;
+    for (int b = 0; b < DP_LINK_DESC_BANKS_MAX; b++) {
+      const struct dp_link_desc_bank *k = &ab->dp.link_desc_banks[b];
+      if (k->size && addr >= k->paddr && addr < k->paddr + k->size) { in = 1; break; }
+    }
+    if (!in && !outside++) first_out = addr;
+    a[used++] = addr;
+  }
+  nw_sort_u64(a, used);
+  u32 repeated = 0; u64 first_rep = 0;
+  for (u32 i = 1; i < used; i++) if (a[i] == a[i - 1] && !repeated++) first_rep = a[i];
+  lx_log(repeated || outside ? 3 : 6, "wifi: idle list %s: %u entries, %u empty, %u twice (first %llx)", when, n, zero, repeated,
+         (unsigned long long)first_rep);
+  lx_log(outside ? 3 : 6, "wifi: idle list: %u outside the banks (first %llx), %llx..%llx", outside, (unsigned long long)first_out,
+         (unsigned long long)(used ? a[0] : 0), (unsigned long long)(used ? a[used - 1] : 0));
+  for (int b = 0; b < DP_LINK_DESC_BANKS_MAX; b++) {
+    const struct dp_link_desc_bank *k = &ab->dp.link_desc_banks[b];
+    if (k->size) lx_log(6, "wifi: link desc bank %d: %llx + %x", b, (unsigned long long)k->paddr, k->size);
+  }
+  vfree(a);
+}
 /* What the chip did with the receive buffers the host posted (worker only). compare 0 remembers a fingerprint of every posted buffer
  * (descriptor start, the attention and MPDU start tags, the copied 802.11 header); compare 1 counts the buffers that differ since and
  * logs the first few: descriptor words and the header's first 16 bytes (frame control, duration, address 1, start of address 2). Also
