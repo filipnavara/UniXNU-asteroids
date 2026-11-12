@@ -619,4 +619,55 @@ s = s[:i] + body + s[j:]
 open(dst, 'w').write(s)
 PY
 grep -q 'nw_wifi_dp_vendor & 64' $O/dp_tx.c || { echo "dp_tx.c srng setup patch missed" >&2; exit 1; }
+# The IV of decrypted group frames: ath11k keeps it (mac80211 checks the PN) by copying it out of the 802.11 header the chip stores in
+# the receive descriptor, but the WCN6750 stores no IV there (all zero: key id 0, so mac80211 found no group key and dropped every
+# broadcast/multicast frame as RX_DROP_U_UNPROTECTED, wifi86). When the copy is all zero the IV is rebuilt from the descriptor's
+# mpdu_start (PN words and key id, QCN9074 layout as the WCN6750 uses), as ath12k builds it (ath12k_hal_rx_desc_get_crypto_hdr_qcn9274).
+python3 - "$O/dp_rx.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = """		memcpy(skb_push(msdu,
+				ath11k_dp_rx_crypto_param_len(ar, enctype)),
+		       (void *)hdr + hdr_len,
+		       ath11k_dp_rx_crypto_param_len(ar, enctype));"""
+assert s.count(old) == 2, "dp_rx.c crypto param copies"
+s = s.replace(old, "\t\tnw_dp_rx_put_crypto_param(ar, msdu, (u8 *)hdr + hdr_len, enctype);")
+mark = 'static void ath11k_dp_rx_h_undecap_nwifi('
+helper = """static void nw_dp_rx_put_crypto_param(struct ath11k *ar, struct sk_buff *msdu, const u8 *stored, enum hal_encrypt_type enctype)
+{
+	const int len = ath11k_dp_rx_crypto_param_len(ar, enctype);
+	u8 *iv = skb_push(msdu, len);
+	struct hal_rx_desc *desc = ATH11K_SKB_RXCB(msdu)->rx_desc;
+	int i;
+
+	memcpy(iv, stored, len);
+	if (len != IEEE80211_CCMP_HDR_LEN || !desc || ar->ab->hw_params.hw_ops->rx_desc_get_hdr_status != wcn6750_ops.rx_desc_get_hdr_status)
+		return;
+	for (i = 0; i < len; i++)
+		if (iv[i])
+			return;
+	switch (enctype) {
+	case HAL_ENCRYPT_TYPE_CCMP_128:
+	case HAL_ENCRYPT_TYPE_CCMP_256:
+	case HAL_ENCRYPT_TYPE_GCMP_128:
+	case HAL_ENCRYPT_TYPE_AES_GCMP_256: {
+		const u32 pn0 = __le32_to_cpu(desc->u.qcn9074.mpdu_start.pn[0]), pn1 = __le32_to_cpu(desc->u.qcn9074.mpdu_start.pn[1]);
+		const u32 key_id = FIELD_GET(RX_MPDU_START_INFO12_KEY_ID, __le32_to_cpu(desc->u.qcn9074.mpdu_start.info12));
+
+		iv[0] = pn0; iv[1] = pn0 >> 8; iv[2] = 0; iv[3] = 0x20 | ((key_id & 3) << 6);
+		iv[4] = pn0 >> 16; iv[5] = pn0 >> 24; iv[6] = pn1; iv[7] = pn1 >> 8;
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+"""
+assert s.count(mark) == 1
+s = s.replace(mark, helper + mark, 1)
+open(path, 'w').write(s)
+PY
+grep -q 'nw_dp_rx_put_crypto_param(ar, msdu' $O/dp_rx.c || { echo "dp_rx.c group IV patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"
