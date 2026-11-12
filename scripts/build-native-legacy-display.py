@@ -312,7 +312,7 @@ gmu_sources=[adreno/(n+'.cpp') for n in ('NativeAdrenoMemory','NativeAdrenoSmmuM
                                           'NativeAdrenoSmmuContext','NativeAdrenoGmuContext','NativeAdrenoCpu',
                                           'NativeAdrenoSha256','NativeAdrenoGpuContext','NativeAdrenoRing',
                                           'NativeAdrenoCpInit','NativeAdrenoPwrup','NativeAdrenoSubmit','NativeAdrenoTimer','NativeAdrenoProfile',
-                                          'NativeAdrenoUserClient','NativeAdrenoPublish')]
+                                          'NativeAdrenoUserClient','NativeAdrenoPublish','NativeAdrenoPool','NativeAdrenoPreempt')]
 gmu_objs=[]
 for src in gmu_sources:
     gmu_objs.append(OUT/(src.stem+'.o'));run(kernel_cxx(src,gmu_objs[-1],adreno_flags),cwd=r['directory'])
