@@ -177,6 +177,15 @@ void lx_kfree_skb_reason(struct sk_buff *s, unsigned reason) {
       if (!seen[i].count) seen[i].reason = reason;
       if (seen[i].count++ % 100 == 0) lx_log(6, "wifi: frame dropped, reason %#x (%u so far), len %u", reason, seen[i].count, s->len);
     }
+    /* The first frames mac80211 drops (its reasons are in subsystem 1): the 802.11 header (frame control, address 1 and 2) and the
+     * receive flags of mac80211's status (struct ieee80211_rx_status: flag at byte 24 of the control block). */
+    static unsigned shown;
+    if (reason >> 16 == 1 && shown < 6 && s->len >= 16) {
+      const u8 *h = s->data; u32 flag; memcpy(&flag, s->cb + 24, 4); shown++;
+      lx_log(6, "wifi: drop %#x fc %02x%02x flag %08x len %u", reason, h[0], h[1], flag, s->len);
+      lx_log(6, "wifi: drop a1 %02x:%02x:%02x:%02x:%02x:%02x a2 %02x:%02x:%02x:%02x:%02x:%02x", h[4], h[5], h[6], h[7], h[8], h[9], h[10],
+             h[11], h[12], h[13], h[14], h[15]);
+    }
   }
   kfree_skb(s);
 }
