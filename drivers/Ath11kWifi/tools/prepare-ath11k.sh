@@ -142,6 +142,19 @@ if os.environ.get('NW_RX_MAC_BUF_RING', '1') == '0':
 open(dst, 'w').write(s)
 PY
 grep -q 'bdwlan.b%02x' $O/core.c || { echo "core.c patch missed" >&2; exit 1; }
+# The board can give IMPS back (nw_wifi_idle_ps, wifi-idle-ps=1) now that the SoC wake handshake works: the vendor firmware sleeps
+# between scans under the vendor host, and under ours its stall monitor records an idle pdev with no receive progress
+# (_wal_txrx_monitor_pdev_record type 2) before the scan that later asserts (wal_monitor_algo_policy_enforce:1862).
+python3 - "$O/core.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '\tab->hw_params = *hw_params;\n'
+assert s.count(old) == 1, "core.c hw_params copy mark"
+s = s.replace(old, old + '\t{\n\t\textern unsigned nw_wifi_idle_ps;\n\n\t\tif (nw_wifi_idle_ps)\n\t\t\tab->hw_params.idle_ps = true;\n\t}\n', 1)
+open(path, 'w').write(s)
+PY
+grep -q 'nw_wifi_idle_ps' $O/core.c || { echo "core.c idle ps patch missed" >&2; exit 1; }
 # The WCN6750 here keeps its address in NV (icnss2's use-nv-mac) and reports none, and ath11k's fallback (the devicetree's address) has
 # nothing: the copy of mac.c takes the board's address (nw_board_mac, made from the chip id) for a radio whose address is not valid or
 # is the vendor default 00:03:7f, as Ath12kWifi does for ath12k. Without it the interface refuses to open (-EADDRNOTAVAIL).

@@ -48,6 +48,7 @@ extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
+extern "C" volatile unsigned nw_wifi_idle_ps;  // the module's: IMPS on (wifi-idle-ps=1)
 extern "C" volatile unsigned nw_wifi_fw_log_early_on;  // the module's: firmware log levels before the ring setup
 extern "C" volatile unsigned nw_wifi_qmi_vendor, nw_wifi_ddr_type;  // the module's: more vendor choices, DDR type
 extern "C" volatile unsigned nw_wifi_dp_vendor;  // the module's: the vendor's data path choices (bit mask)
@@ -1155,6 +1156,9 @@ void wifiThread(void *, wait_result_t) {
     unsigned fwlogEarly = 0;  // wifi-fwlog: also the firmware log levels before the ring setup
     PE_parse_boot_argn("wifi-fwlog", &fwlogEarly, sizeof fwlogEarly);
     nw_wifi_fw_log_early_on = fwlogEarly;
+    unsigned idlePs = 0;  // wifi-idle-ps=1: the firmware may enter IMPS between scans (WMI_PDEV_PARAM_IDLE_PS_CONFIG 1)
+    PE_parse_boot_argn("wifi-idle-ps", &idlePs, sizeof idlePs);
+    nw_wifi_idle_ps = idlePs;
     // wifi-qmi-vendor=MASK: 1 host_build_type, 2 ddr_type (wifi-ddr-type, default 7 = LPDDR4X, the 3a's /memory ddr_device_type),
     // 4 no mem_cfg_mode, 8 no 11D offload scan, 16 data stall detection; 0 ath11k's.
     unsigned qmiVendor = 0, ddrType = 7;
