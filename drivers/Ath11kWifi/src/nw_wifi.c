@@ -134,6 +134,60 @@ void nw_wifi_reg_check(const char *when) {
            ath11k_hif_read32(ab, s->hwreg_base[HAL_SRNG_REG_GRP_R2] + 4), reg, ath11k_hif_read32(ab, reg), (u32)s->ring_base_paddr);
   }
 }
+/* Every REO/WBM/TCL configuration register whose value differed between the vendor stack (idle, wlan0 up) and ours before the scan
+ * (logs/regdiff-idle.txt; not the copy engines, which the firmware guards, nor addresses, ring pointers, MSI data, the scattered link
+ * list or timestamps): the vendor's values, written in this order (worker only). 39 registers. */
+static const struct { u32 off, val; } nw_vendor_cfg[] = {
+  {0x0a34004, 0x0000001f},  /* WBM_R0_RELEASE_RING_ENABLE */
+  {0x0a3400c, 0x00000003},  /* WBM_R0_LINK_DESC_RING_ENABLE */
+  {0x0a34010, 0x0000001f},  /* WBM_R0_MISC_RING_ENABLE */
+  {0x0a3421c, 0x00000000},  /* WBM_R0_SW_RELEASE_RING_CONSUMER_INT_SETUP_IX0 */
+  {0x0a34884, 0x000000c3},  /* WBM_R0_WBM_IDLE_LINK_RING_MISC */
+  {0x0a348a4, 0x00000000},  /* WBM_R0_WBM_IDLE_LINK_RING_CONSUMER_INT_SETUP_IX0 */
+  {0x0a3492c, 0x00008008},  /* WBM_R0_WBM2SW0_RELEASE_RING_ID */
+  {0x0a34948, 0x00200000},  /* WBM_R0_WBM2SW0_RELEASE_RING_PRODUCER_INT_SETUP */
+  {0x0a349dc, 0x00008208},  /* WBM_R0_WBM2SW2_RELEASE_RING_ID */
+  {0x0a349f8, 0x00200000},  /* WBM_R0_WBM2SW2_RELEASE_RING_PRODUCER_INT_SETUP */
+  {0x0a34a34, 0x00008308},  /* WBM_R0_WBM2SW3_RELEASE_RING_ID */
+  {0x0a34a50, 0x00010008},  /* WBM_R0_WBM2SW3_RELEASE_RING_PRODUCER_INT_SETUP */
+  {0x0a34a8c, 0x00000000},  /* WBM_R0_WBM2SW4_RELEASE_RING_ID */
+  {0x0a34a94, 0x00000080},  /* WBM_R0_WBM2SW4_RELEASE_RING_MISC */
+  {0x0a34aa8, 0x00000000},  /* WBM_R0_WBM2SW4_RELEASE_RING_PRODUCER_INT_SETUP */
+  {0x0a38000, 0x837ff10d},  /* REO_R0_GENERAL_ENABLE */
+  {0x0a38004, 0x66666666},  /* REO_R0_DESTINATION_RING_CTRL_IX_0 */
+  {0x0a3800c, 0x66666666},  /* REO_R0_DESTINATION_RING_CTRL_IX_2 */
+  {0x0a38010, 0x66666666},  /* REO_R0_DESTINATION_RING_CTRL_IX_3 */
+  {0x0a3816c, 0x00000000},  /* REO_R0_SW2REO_RING_CONSUMER_INT_SETUP_IX0 */
+  {0x0a381f4, 0x00000110},  /* REO_R0_REO2SW1_RING_ID */
+  {0x0a38210, 0x00400000},  /* REO_R0_REO2SW1_RING_PRODUCER_INT_SETUP */
+  {0x0a3824c, 0x00000210},  /* REO_R0_REO2SW2_RING_ID */
+  {0x0a38268, 0x00400000},  /* REO_R0_REO2SW2_RING_PRODUCER_INT_SETUP */
+  {0x0a382a4, 0x00000310},  /* REO_R0_REO2SW3_RING_ID */
+  {0x0a382c0, 0x00400000},  /* REO_R0_REO2SW3_RING_PRODUCER_INT_SETUP */
+  {0x0a382fc, 0x00000410},  /* REO_R0_REO2SW4_RING_ID */
+  {0x0a38318, 0x00400000},  /* REO_R0_REO2SW4_RING_PRODUCER_INT_SETUP */
+  {0x0a38404, 0x00000910},  /* REO_R0_REO2TCL_RING_ID */
+  {0x0a38420, 0x00010010},  /* REO_R0_REO2TCL_RING_PRODUCER_INT_SETUP */
+  {0x0a38564, 0x000186a0},  /* REO_R0_AGING_THRESHOLD_IX_0 */
+  {0x0a38568, 0x000186a0},  /* REO_R0_AGING_THRESHOLD_IX_1 */
+  {0x0a3856c, 0x000186a0},  /* REO_R0_AGING_THRESHOLD_IX_2 */
+  {0x0a385d8, 0x000c0000},  /* REO_R0_MISC_CTL */
+  {0x0a444ac, 0x00fac688},  /* TCL_R0_PCP_TID_MAP */
+  {0x0a446c4, 0x00000000},  /* TCL_R0_SW2TCL1_RING_CONSUMER_INT_SETUP_IX0 */
+  {0x0a4471c, 0x00000000},  /* TCL_R0_SW2TCL2_RING_CONSUMER_INT_SETUP_IX0 */
+  {0x0a44774, 0x00000000},  /* TCL_R0_SW2TCL3_RING_CONSUMER_INT_SETUP_IX0 */
+  {0x0a447cc, 0x00000000},  /* TCL_R0_SW2TCL_CREDIT_RING_CONSUMER_INT_SETUP_IX0 */
+};
+void nw_wifi_vendor_config(const char *when) {
+  if (!g_hw) return;
+  struct ath11k *ar = g_hw->priv; struct ath11k_base *ab = ar->ab; int changed = 0, kept = 0;
+  for (unsigned i = 0; i < ARRAY_SIZE(nw_vendor_cfg); i++) {
+    if (ath11k_hif_read32(ab, nw_vendor_cfg[i].off) != nw_vendor_cfg[i].val) changed++;
+    ath11k_hif_write32(ab, nw_vendor_cfg[i].off, nw_vendor_cfg[i].val);
+    if (ath11k_hif_read32(ab, nw_vendor_cfg[i].off) == nw_vendor_cfg[i].val) kept++;
+  }
+  lx_log(6, "vendor config %s: %d registers, %d were different, %d read back", when, (int)ARRAY_SIZE(nw_vendor_cfg), changed, kept);
+}
 /* The data-path registers as the vendor stack leaves them (register diff 2026-11-12, logs/regdiff-idle.txt: vendor icnss2 + qcacld,
  * idle with wlan0 up, against ours before the scan): WBM does not feed RXDMA0 link descriptors (LINK_DESC_RING_ENABLE 0x03, ours 0x13
  * with WBM2RXDMA0_LINK_RING_ENABLE), the idle link ring has RING_ID_DISABLE, REO has no RXDMA2REO ring and BAR destination 0, every REO
