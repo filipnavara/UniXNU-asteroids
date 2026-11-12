@@ -1179,6 +1179,7 @@ void wifiThread(void *, wait_result_t) {
     PE_parse_boot_argn("wifi-aj", &autoJoin, sizeof autoJoin);
     bool powered = false, scanAsked = false;
     uint64_t scanAt = 0, nextStageAt = 0;
+    uint64_t scanStartedAt = 0;  // when the board started the first scan (wifi-regdump)
     unsigned scanStage = 0;
     unsigned fwdLeft = 0, idleDumps = 0;
     uint64_t radioAt = 0;
@@ -1273,10 +1274,29 @@ void wifiThread(void *, wait_result_t) {
             nw_wifi_rx_buf_probe(0);  // which receive buffers the chip writes from here on
             nw_wifi_reg_check("before the scan");
             nw_wifi_idle_check("before the scan");
+            scanStartedAt = pNow();
             // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
             const int s = nw_wifi_self_scan();
             native_wlan_stats[11] = native_wlan_stats[11] + 1;
             if (s) logf(3, "wifi: scan refused: %d", s);
+        }
+        // wifi-regdump=1: the data-path registers for the diff against the vendor stack (scripts/diff-wcn-regs.py): snapshot 0 five
+        // seconds after radio on (idle), snapshot 1 0.3 s after the scan starts (the firmware dies 0.5-2 s in); logged 30 lines every
+        // 2.5 s (the log keeps 100 lines a 2 s slot), slot 1 once the firmware's diag records are out.
+        static unsigned regDump = 2;
+        if (regDump == 2) {regDump = 0; PE_parse_boot_argn("wifi-regdump", &regDump, sizeof regDump);}
+        static bool snap0, snap1;
+        static int regFrom[2] = {-1, -1};
+        static uint64_t regLogAt;
+        if (regDump && powered && radioAt && !snap0 && pNow() >= radioAt + 5000) {snap0 = true; nw_wifi_reg_snapshot(0); regFrom[0] = 0;}
+        if (regDump && scanAsked && !snap1 && pNow() >= scanStartedAt + 300) {snap1 = true; nw_wifi_reg_snapshot(1); regFrom[1] = 0;}
+        if (regDump && pNow() >= regLogAt) {
+            const int slot = regFrom[0] >= 0 ? 0 : (regFrom[1] >= 0 && !fwdLeft) ? 1 : -1;
+            if (slot >= 0) {
+                const int next = nw_wifi_reg_log(slot, regFrom[slot], 30);
+                regFrom[slot] = next ? next : -1;
+                regLogAt = pNow() + 2500;
+            }
         }
         if (gScanDone) {
             gScanDone = 0; logNetworks(); stage(StScanned);

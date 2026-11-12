@@ -134,6 +134,29 @@ void nw_wifi_reg_check(const char *when) {
            ath11k_hif_read32(ab, s->hwreg_base[HAL_SRNG_REG_GRP_R2] + 4), reg, ath11k_hif_read32(ab, reg), (u32)s->ring_base_paddr);
   }
 }
+/* The WCN6750 data-path registers (scripts/gen-wcn-reglist.py, nw_wcn_regs.h) for the register-state diff against the vendor stack
+ * (tools/nwregdump, scripts/diff-wcn-regs.py), read through ath11k_hif_read32 (the static windows) as one snapshot per slot (worker
+ * only); nw_wifi_reg_log logs a slot's values from an index, 8 a line, and returns where the next call continues (0 when done). */
+#include "nw_wcn_regs.h"
+static u32 *nw_reg_snap[2];
+void nw_wifi_reg_snapshot(int slot) {
+  if (!g_hw || slot < 0 || slot > 1) return;
+  struct ath11k *ar = g_hw->priv; struct ath11k_base *ab = ar->ab;
+  if (!nw_reg_snap[slot]) nw_reg_snap[slot] = kzalloc(NW_WCN_REGS * sizeof(u32), GFP_KERNEL);
+  if (!nw_reg_snap[slot]) return;
+  for (int i = 0; i < NW_WCN_REGS; i++) nw_reg_snap[slot][i] = ath11k_hif_read32(ab, nw_wcn_regs[i]);
+  lx_log(6, "nwreg s%d: snapshot of %d registers", slot, NW_WCN_REGS);
+}
+int nw_wifi_reg_log(int slot, int from, int lines) {
+  if (slot < 0 || slot > 1 || !nw_reg_snap[slot]) return 0;
+  const u32 *v = nw_reg_snap[slot];
+  for (int n = 0; n < lines && from < NW_WCN_REGS; n++, from += 8) {
+    u32 w[8] = {};
+    for (int k = 0; k < 8 && from + k < NW_WCN_REGS; k++) w[k] = v[from + k];
+    lx_log(6, "nwreg s%d %d: %08x %08x %08x %08x %08x %08x %08x %08x", slot, from, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+  }
+  return from < NW_WCN_REGS ? from : 0;
+}
 /* The WBM idle list (worker only): the link descriptor addresses the host listed in the WBM idle ring, sorted, to find one listed twice
  * (the firmware asserts in whalRxMpduPop when two receive entries name the same link descriptor) and any outside the link descriptor
  * banks; then the banks. */
