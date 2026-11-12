@@ -95,4 +95,6 @@ u64 nw_wifi_ddr_range[6];
 unsigned nw_wifi_wmi_mem = 1;
 /* Which of the vendor host's WMI_INIT values replace ath11k's (bit mask, see tools/prepare-ath11k.sh); set by the board. */
 unsigned nw_wifi_wmi_vendor;
+/* The vendor host's flow search engine setup after the rings (bit mask: 1 FSE setup, 2 FISA config, see tools/prepare-ath11k.sh); set by the board. */
+unsigned nw_wifi_fse;
 u32 nw_wifi_mhi_size;

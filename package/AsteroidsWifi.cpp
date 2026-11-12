@@ -48,6 +48,7 @@ extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
+extern "C" volatile unsigned nw_wifi_fse;  // the module's: the vendor's flow search engine setup (bit mask)
 extern "C" volatile unsigned nw_wifi_wmi_vendor;  // the module's: vendor WMI_INIT values (bit mask)
 extern "C" volatile unsigned nw_wifi_wmi_mem;  // the module's: answer the firmware's WMI host memory requests
 extern "C" volatile unsigned nw_wifi_scan_mask;  // the module's: the part of the channel list the next self-test scan takes
@@ -1138,6 +1139,10 @@ void wifiThread(void *, wait_result_t) {
     unsigned wmiVendor = 0;
     PE_parse_boot_argn("wifi-wmi-vendor", &wmiVendor, sizeof wmiVendor);
     nw_wifi_wmi_vendor = wmiVendor;
+    // wifi-fse=MASK: the vendor host's flow search engine setup after the rings (1 FSE setup, 2 FISA config), 0 none.
+    unsigned fse = 0;
+    PE_parse_boot_argn("wifi-fse", &fse, sizeof fse);
+    nw_wifi_fse = fse;
     // wifi-dp-poll=MS: the module's polled data path groups (REO, WBM, RXDMA rings: register reads and tail pointer writes into the
     // chip) every MS milliseconds instead of every round; the vendor host touches those registers only on an interrupt and under a
     // wake vote. The copy engines (WMI, HTT) are still polled every round.

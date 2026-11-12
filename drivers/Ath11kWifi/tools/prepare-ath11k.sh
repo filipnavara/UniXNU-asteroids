@@ -76,7 +76,8 @@ grep -q 'host memory requests' $O/wmi.c || { echo "wmi.c mem req patch missed" >
 # service-ready handlers, wmi_copy_resource_config), each behind a bit of nw_wifi_wmi_vendor (board: wifi-wmi-vendor=MASK, 0 keeps
 # ath11k's): 1 rx decap Ethernet (2) instead of native Wi-Fi (1); 2 sizing, 38 peers and 76 TIDs instead of 16 and 32; 4 flag1 as
 # the vendor sets it (MGMT_COMP_EVT_BUNDLE bit 9, TX_MSDU_ID_NEW_PARTITION bit 10, IPA_DISABLE bit 30; not BSS_CHANNEL_INFO_64 bit
-# 5); 8 flags2 without ath11k's CALC_NEXT_DTIM.
+# 5); 8 flags2 without ath11k's CALC_NEXT_DTIM; 16 HTT_H2T_NO_HTC_HDR_LEN_IN_MSG_LEN (flag1 bit 19) when the firmware has
+# service 176, as the vendor host sets it.
 python3 - "$O/wmi.c" <<'PY'
 import sys
 path = sys.argv[1]
@@ -94,6 +95,8 @@ new = """\t{
 \t\t}
 \t\tif (nw_wifi_wmi_vendor & 4)
 \t\t\tconfig.flag1 = (config.flag1 & ~BIT(5)) | BIT(9) | BIT(10) | BIT(30);
+\t\tif ((nw_wifi_wmi_vendor & 16) && test_bit(176, ab->wmi_ab.svc_map))
+\t\t\tconfig.flag1 |= BIT(19);
 \t\tath11k_info(ab, "wmi init: vendor values 0x%x: decap %u peers %u tids %u flag1 0x%x\\n", nw_wifi_wmi_vendor,
 \t\t\t    config.rx_decap_mode, config.num_peers, config.num_tids, config.flag1);
 \t}
@@ -355,4 +358,79 @@ static int nw_htt_rx_ring_sel(struct ath11k_base *ab, u32 ring_id, int mac_id)
 open(dst, 'w').write(s)
 PY
 [ "${NW_RX_RING_SEL:-1}" = 0 ] || grep -q 'nw_htt_rx_ring_sel(ab, ring_id' $O/dp_rx.c || { echo "dp_rx.c patch missed" >&2; exit 1; }
+# The vendor host (qcacld-3.0 for WCN6750, CONFIG_RX_FISA=y, ini dp_rx_fisa_enable default on) programs the RXOLE flow search engine
+# after the ring setup (components/dp wlan_dp_rx_fisa_attach_target): HTT RX_FSE_SETUP_CFG (0x12: a zeroed flow table of 128 entries in
+# host memory, max search 2, IPv4-compatible IPv6 prefix, the default Toeplitz key) and then RX_FISA_CFG (0x15: FISA v2 on, aggregation
+# limit 15, timeout 0xffffffff). ath11k sends neither; the firmware's receive path (whalRxMpduPop logs "fse_watchdog") may count on the
+# engine being set up. The copy of dp_rx.c sends them once, after pdev 0's rings, by the bits of nw_wifi_fse (board: wifi-fse=MASK;
+# 1 FSE setup, 2 FISA config; 0 neither).
+python3 - "$O/dp_rx.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+fn = 'int ath11k_dp_rx_pdev_alloc(struct ath11k_base *ab, int mac_id)\n'
+assert s.count(fn) == 1, "dp_rx.c pdev alloc mark (fse)"
+helper = """/* Ath11kWifi: the vendor host's flow search engine setup (see tools/prepare-ath11k.sh). */
+extern unsigned nw_wifi_fse;
+static int nw_htt_send_words(struct ath11k_base *ab, const u32 *words, int n)
+{
+\tstruct sk_buff *skb = ath11k_htc_alloc_skb(ab, n * 4);
+\tint ret;
+
+\tif (!skb)
+\t\treturn -ENOMEM;
+\tskb_put(skb, n * 4);
+\tmemcpy(skb->data, words, n * 4);
+\tret = ath11k_htc_send(&ab->htc, ab->dp.eid, skb);
+\tif (ret)
+\t\tdev_kfree_skb_any(skb);
+\treturn ret;
+}
+static void nw_htt_fse_setup(struct ath11k_base *ab)
+{
+\tstatic const u8 key[40] = {
+\t\t0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2, 0x41, 0x67, 0x25, 0x3d, 0x43, 0xa3, 0x8f, 0xb0,
+\t\t0xd0, 0xca, 0x2b, 0xcb, 0xae, 0x7b, 0x30, 0xb4, 0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30, 0xf2, 0x0c,
+\t\t0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa };
+\tstatic void *table;
+\tstatic dma_addr_t paddr;
+\tu32 w[14] = {};
+\tint ret, i;
+
+\tath11k_info(ab, "fse: services no-htc-hdr-len %d fse-cmem %d, mask %u\\n", test_bit(176, ab->wmi_ab.svc_map),
+\t\t    test_bit(262, ab->wmi_ab.svc_map), nw_wifi_fse);
+\tif (nw_wifi_fse & 1) {
+\t\tif (!table)
+\t\t\ttable = dma_alloc_coherent(ab->dev, 128 * 64, &paddr, GFP_KERNEL);
+\t\tif (!table) {
+\t\t\tath11k_warn(ab, "fse: no flow table\\n");
+\t\t\treturn;
+\t\t}
+\t\tmemset(table, 0, 128 * 64);
+\t\tw[0] = 0x12 /* RX_FSE_SETUP_CFG, pdev 0 */;
+\t\tw[1] = 128 | 2 << 20 | 2 << 28; /* records, max search, HTT_RX_IPV4_COMPATIBLE_IPV6 */
+\t\tw[2] = lower_32_bits(paddr);
+\t\tw[3] = upper_32_bits(paddr);
+\t\tfor (i = 0; i < 10; i++)
+\t\t\tw[4 + i] = key[4 * i] | key[4 * i + 1] << 8 | key[4 * i + 2] << 16 | (u32)key[4 * i + 3] << 24;
+\t\tw[13] &= 0x07ffffff;
+\t\tret = nw_htt_send_words(ab, w, 14);
+\t\tath11k_info(ab, "fse: setup table %pad: %d\\n", &paddr, ret);
+\t}
+\tif (nw_wifi_fse & 2) {
+\t\tconst u32 c[3] = { 0x15 /* RX_FISA_CFG, pdev 0 */, 1 | 15 << 1 /* FISA v2, aggregation limit */, 0xffffffff };
+
+\t\tret = nw_htt_send_words(ab, c, 3);
+\t\tath11k_info(ab, "fse: fisa config: %d\\n", ret);
+\t}
+}
+
+"""
+s = s.replace(fn, helper + fn, 1)
+old = "\tif (!ab->hw_params.rxdma1_enable)\n\t\tgoto config_refill_ring;\n"
+assert s.count(old) == 1, "dp_rx.c rxdma1 mark"
+s = s.replace(old, "\tif (mac_id == 0 && nw_wifi_fse)\n\t\tnw_htt_fse_setup(ab);\n\n" + old, 1)
+open(path, 'w').write(s)
+PY
+grep -q 'nw_htt_fse_setup(ab);' $O/dp_rx.c || { echo "dp_rx.c fse patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"
