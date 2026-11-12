@@ -86,9 +86,7 @@ void nw_wifi_ring_state(char *b, int n) { if (n) b[0] = 0; }
 /* More of the firmware's own log (WMI_DBGLOG_CFG_CMDID, what ath11k's fw_dbglog debugfs file sends): the modules named below at the
  * verbose level and every module enabled. The firmware sends its log in ~1.5 KB reports, so more of it also means the report before
  * an assert is closer to the assert. Worker only, after the radio's pdev exists. */
-int nw_wifi_fw_log_verbose(void) {
-  if (!g_hw) return -ENODEV;
-  struct ath11k *ar = g_hw->priv;
+static int nw_fw_log_verbose_ar(struct ath11k *ar) {
   static const u16 modules[] = { WLAN_MODULE_WAL, WLAN_MODULE_WHAL, WLAN_MODULE_RX, WLAN_MODULE_DATA_TXRX, WLAN_MODULE_HTT };
   u32 bitmap[MAX_MODULE_ID_BITMAP_WORDS]; int ret = 0;
   mutex_lock(&ar->conf_mutex);
@@ -106,6 +104,18 @@ int nw_wifi_fw_log_verbose(void) {
   mutex_unlock(&ar->conf_mutex);
   lx_log(ret ? 3 : 6, "wifi: firmware log verbose for WAL, WHAL, RX, DATA_TXRX, HTT: %d", ret);
   return ret;
+}
+int nw_wifi_fw_log_verbose(void) {
+  if (!g_hw) return -ENODEV;
+  return nw_fw_log_verbose_ar(g_hw->priv);
+}
+/* The same before the receive rings are set up (the copy of dp_rx.c calls it at the start of pdev 0's ath11k_dp_rx_pdev_alloc), so the
+ * firmware logs how it takes the host's HTT ring setup, as the vendor host's startup log levels let it; set by the board (wifi-fwlog). */
+unsigned nw_wifi_fw_log_early_on;
+void nw_wifi_fw_log_early(struct ath11k_base *ab) {
+  struct ath11k *ar = ab->pdevs[0].ar;
+  if (!nw_wifi_fw_log_early_on || !ar) return;
+  lx_log(6, "wifi: firmware log verbose before the ring setup: %d", nw_fw_log_verbose_ar(ar));
 }
 /* Reads back what the host programmed through the register window (worker only): every initialized ring that lives in chip registers
  * (copy engines, TCL, REO, WBM; not the LMAC rings, which the firmware sets up) must show its ring base address in its first register.

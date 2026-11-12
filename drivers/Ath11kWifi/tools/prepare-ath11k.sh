@@ -573,4 +573,16 @@ s = s.replace(old, old[:-len('\treturn 0;\n}\n')] + """\tif (nw_wifi_dp_vendor &
 open(path, 'w').write(s)
 PY
 grep -q 'nw_reo_vendor(ab);' $O/dp_rx.c || { echo "dp_rx.c dp vendor patch missed" >&2; exit 1; }
+# With wifi-fwlog the firmware's receive/HTT modules log verbosely from before the first HTT ring setup (nw_wifi_fw_log_early), so its
+# record of the host's ring setup (htt_tgt_rx.c) can be compared with the vendor host's.
+python3 - "$O/dp_rx.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '\tret = ath11k_dp_rx_pdev_srng_alloc(ar);\n'
+assert s.count(old) == 1, "dp_rx.c srng alloc mark"
+s = s.replace(old, '\t{\n\t\textern void nw_wifi_fw_log_early(struct ath11k_base *ab);\n\n\t\tif (mac_id == 0)\n\t\t\tnw_wifi_fw_log_early(ab);\n\t}\n' + old, 1)
+open(path, 'w').write(s)
+PY
+grep -q 'nw_wifi_fw_log_early(ab);' $O/dp_rx.c || { echo "dp_rx.c early fw log patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"

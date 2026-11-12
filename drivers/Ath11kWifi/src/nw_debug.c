@@ -58,6 +58,14 @@ void nw_fw_diag(const void *data, unsigned long len) {
     r->w0 = w[0]; r->w1 = w[1]; memset(r->a, 0, sizeof(r->a));
     memcpy(r->a, p + head, pay < sizeof(r->a) ? pay : sizeof(r->a));
     nw_fwd_total++;
+    { /* the firmware's records of the host's receive setup (htt_tgt_rx.c 1261-1269, wal_rx_control.c 1103-1116), logged as they come */
+      static unsigned setup_logged; const unsigned id = r->w1 >> 16;
+      if (((id >= 1261 && id <= 1269) || (id >= 1103 && id <= 1116)) && setup_logged < 60) {
+        setup_logged++;
+        lx_log(6, "fwd %06x %u/%u/%u: %x %x %x %x %x %x", r->w0 & 0xffffff, r->w0 >> 24, id, (unsigned)pay, r->a[0], r->a[1], r->a[2],
+               r->a[3], r->a[4], r->a[5]);
+      }
+    }
     p += head + padded; len -= head + padded;
   }
 }

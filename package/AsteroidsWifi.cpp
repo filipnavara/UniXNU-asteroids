@@ -48,6 +48,7 @@ extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
+extern "C" volatile unsigned nw_wifi_fw_log_early_on;  // the module's: firmware log levels before the ring setup
 extern "C" volatile unsigned nw_wifi_qmi_vendor, nw_wifi_ddr_type;  // the module's: more vendor choices, DDR type
 extern "C" volatile unsigned nw_wifi_dp_vendor;  // the module's: the vendor's data path choices (bit mask)
 extern "C" volatile unsigned nw_wifi_fse;  // the module's: the vendor's flow search engine setup (bit mask)
@@ -1150,6 +1151,9 @@ void wifiThread(void *, wait_result_t) {
     unsigned dpVendor = 0;
     PE_parse_boot_argn("wifi-dp-vendor", &dpVendor, sizeof dpVendor);
     nw_wifi_dp_vendor = dpVendor;
+    unsigned fwlogEarly = 0;  // wifi-fwlog: also the firmware log levels before the ring setup
+    PE_parse_boot_argn("wifi-fwlog", &fwlogEarly, sizeof fwlogEarly);
+    nw_wifi_fw_log_early_on = fwlogEarly;
     // wifi-qmi-vendor=MASK: 1 host_build_type, 2 ddr_type (wifi-ddr-type, default 7 = LPDDR4X, the 3a's /memory ddr_device_type),
     // 4 no mem_cfg_mode, 8 no 11D offload scan, 16 data stall detection; 0 ath11k's.
     unsigned qmiVendor = 0, ddrType = 7;
@@ -1234,10 +1238,7 @@ void wifiThread(void *, wait_result_t) {
         // The firmware's last diag records after it died (and once 15 s after radio on, to see what a healthy stretch logs): 80 a
         // round, oldest first, a round every 2.5 s (the log takes 100 lines a slot).
         if (powered && !fwdEarly && pNow() >= scanAt + 13000 - 2000 && !wpssDead) {fwdEarly = true; nw_fw_diag_dump(0, 60);}
-        // The firmware's own records of the host's receive setup (htt_tgt_rx.c, wal_rx_control.c ids), once, 14 s before the scan (about 6 s
-        // after radio on, away from the other dumps: the log keeps 100 lines a 2 s slot).
-        static bool setupDumped;
-        if (powered && scanAt && !setupDumped && pNow() + 14000 >= scanAt) {setupDumped = true; nw_fw_diag_dump_ids(1261, 1269, 40); nw_fw_diag_dump_ids(1103, 1116, 40);}
+        // (The firmware's records of the host's receive setup are logged as they arrive: nw_debug.c nw_fw_diag.)
         if (powered && idleDumps && !wpssDead && pNow() >= radioAt + (idleDumps == 2 ? 25000 : 35000)) {
             --idleDumps;
             logf(6, "wifi: %llu s after radio on, WPSS slave %x", (pNow() - radioAt) / 1000, native_wpss_stats[3]);
