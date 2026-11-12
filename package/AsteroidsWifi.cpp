@@ -625,8 +625,9 @@ int gModuleEvent;
 void *pThreadSelf() {return current_thread();}
 struct ThreadStart {void (*fn)(void *); void *arg;};
 void threadMain(void *param, wait_result_t) {
-    ThreadStart s = *static_cast<ThreadStart *>(param);
-    IOFreeType(static_cast<ThreadStart *>(param), ThreadStart);
+    ThreadStart *start = static_cast<ThreadStart *>(param);
+    const ThreadStart s = *start;
+    IOFreeType(start, ThreadStart);
     s.fn(s.arg);
     thread_terminate(current_thread());
 }
@@ -1155,7 +1156,8 @@ void wifiThread(void *, wait_result_t) {
     stage(StIrqs);
 
     static const struct lx_platform plat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync, pFwGet,
-                                            pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption};
+                                            pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption,
+                                            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};   // one executor
     static const struct lx_platform threadedPlat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync,
                                                     pFwGet, pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption,
                                                     pThreadSelf, pThreadStart, pThreadExit, pModuleLock, pModuleUnlock,
