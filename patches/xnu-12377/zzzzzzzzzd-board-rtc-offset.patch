@@ -1,0 +1,105 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -9045,7 +9045,93 @@
+ 	    "/Applications/Weather.app/Info.plist", &native_staged_union_stage, &native_staged_union_status);
+ }
+ 
++/* The wall clock of a read-only RTC (the PMIC RTC of Qualcomm phones): the platform expert keeps it as counter + offset (ArmDTPlatform),
++ * and the offset lives on the Data volume, as Android's time_daemon keeps it under /data/vendor/time. It is read once the volume is
++ * mounted, before launchd starts, and written whenever a calendar set changes it: one decimal number of seconds and a newline. */
++#include <kern/clock.h>
++static const char native_rtc_offset_path[] = "/private/var/db/unixnu-rtc-offset";
++/* [0] restore: -1 not run, 0 applied, 1 nothing to apply, ENOENT none saved, other errno; [1] stores; [2] the last store's errno */
++volatile int32_t native_rtc_offset_status[3] = {-1};
++/* The platform expert's side. A static kernel link needs a definition; a platform without an RTC offset keeps this one. */
++int armdt_rtc_restore(int found, int64_t offset, clock_sec_t *wall);
++__attribute__((weak)) int
++armdt_rtc_restore(__unused int found, __unused int64_t offset, clock_sec_t *wall)
++{
++	*wall = 0;
++	return 0;
++}
++int native_rtc_offset_store(int64_t offset);
++int
++native_rtc_offset_store(int64_t offset)
++{
++	char text[24];
++	int length = scnprintf(text, sizeof(text), "%lld\n", (long long)offset);
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	int error = vnode_open(native_rtc_offset_path, O_CREAT | O_TRUNC | FWRITE | O_NOFOLLOW, 0644, 0, &vp, ctx);
++	if (!error) {
++		int resid = 0;
++		error = vn_rdwr(UIO_WRITE, vp, text, length, 0, UIO_SYSSPACE, IO_NOAUTH | IO_UNIT, vfs_context_ucred(ctx), &resid,
++		    vfs_context_proc(ctx));
++		if (!error && resid) {
++			error = EIO;
++		}
++		if (!error) {
++			error = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++		}
++		int close_error = vnode_close(vp, FWRITE, ctx);
++		if (!error) {
++			error = close_error;
++		}
++	}
++	native_rtc_offset_status[1]++;
++	native_rtc_offset_status[2] = error;
++	return error;
++}
+ static int
++native_rtc_offset_parse(const char *text, int64_t *offset)
++{
++	int negative = *text == '-', digits = 0;
++	uint64_t value = 0;
++	for (text += negative; *text >= '0' && *text <= '9'; ++text) {
++		if (++digits > 18) {
++			return 0;
++		}
++		value = value * 10 + (uint64_t)(*text - '0');
++	}
++	if (!digits || (*text && *text != '\n')) {
++		return 0;
++	}
++	*offset = negative ? -(int64_t)value : (int64_t)value;
++	return 1;
++}
++static void
++native_rtc_offset_restore(void)
++{
++	char text[24] = {0};
++	int64_t offset = 0;
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	int error = vnode_open(native_rtc_offset_path, FREAD | O_NOFOLLOW, 0, 0, &vp, ctx);
++	if (!error) {
++		int resid = 0;
++		error = vn_rdwr(UIO_READ, vp, text, sizeof(text) - 1, 0, UIO_SYSSPACE, IO_NOAUTH, vfs_context_ucred(ctx), &resid,
++		    vfs_context_proc(ctx));
++		vnode_close(vp, FREAD, ctx);
++		if (!error && !native_rtc_offset_parse(text, &offset)) {
++			error = EINVAL;
++		}
++	}
++	clock_sec_t wall = 0;
++	if (armdt_rtc_restore(!error, offset, &wall)) {
++		clock_set_calendar_microtime(wall, 0);
++	} else if (!error) {
++		error = 1;
++	}
++	native_rtc_offset_status[0] = error;
++}
++
++static int
+ native_owner_data_prepare(proc_t p, user_addr_t scratch)
+ {
+ 	uint64_t base = 0, size = 0;
+@@ -9107,6 +9193,7 @@
+ 	if (!error) native_owner_data_stage = 4;
+ 	if (!error) native_gpu_addon_prepare(p, scratch);
+ 	if (!error) native_staged_apps_prepare(p, scratch, data_mount);
++	if (!error) native_rtc_offset_restore();
+ done:
+ 	if (data_root) vnode_put(data_root);
+ 	native_owner_data_status = error;

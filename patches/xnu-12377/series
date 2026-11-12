@@ -25,3 +25,6 @@ zzzzzzzzza-board-wcomb-carveouts.patch
 zzzzzzzzzb-board-launchd-cache-overlay.patch
 # The Wi-Fi supplicant's executable from the add-on's wifi-bin/ over /usr/libexec (sheng's mount, the executable half).
 zzzzzzzzzc-board-wifi-supplicant-mount.patch
+# The read-only PMIC RTC's offset on Data (rootstockos/UniXNU patches/xnu/zzyd-native-rtc-offset.patch, ported to the 12377 call
+# site): restored before launchd, stored on every calendar set, so a network time survives a restart.
+zzzzzzzzzd-board-rtc-offset.patch

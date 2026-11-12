@@ -60,6 +60,9 @@ extern volatile int native_ls_store_status __attribute__((weak_import));
 extern volatile uint64_t native_data_persist_present __attribute__((weak_import));
 extern volatile int native_staged_apps_stage __attribute__((weak_import));
 extern volatile int32_t native_buttons_stats[10] __attribute__((weak_import));
+// The wall clock (ArmDTPlatform, QcomPmicRtc, the kernel's offset file on Data): see the RTC row below.
+extern volatile int32_t armdt_platform_rtc_stats[5] __attribute__((weak_import)), qcom_pmic_rtc_stats[7] __attribute__((weak_import));
+extern volatile int32_t native_rtc_offset_status[3] __attribute__((weak_import));
 extern volatile int32_t native_backlight_stats[16] __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
@@ -467,6 +470,24 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(row, sizeof row, "B st=%d irq=%d rep=%d mask=%x apid=%d/%d off=%d pdc=%x err=%d spur=%d", native_buttons_stats[0], native_buttons_stats[1],
              native_buttons_stats[2], native_buttons_stats[3], native_buttons_stats[4], native_buttons_stats[5], native_buttons_stats[6],
              native_buttons_stats[7], native_buttons_stats[8], native_buttons_stats[9]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  // The wall clock, UTC: ArmDTPlatform's RTC forwarding (1 an RTC declared, 2 found, 3 found read-only; reads, offset restores, offset
+  // stores, the last store's result), QcomPmicRtc (stage, APID, counter, failed reads) and the kernel's offset file on Data (restore result,
+  // -1 not run, 2 none saved; stores; the last store's errno). A year of 1970 means no time was ever set or restored.
+  if (&armdt_platform_rtc_stats) {
+    char row[120];
+    clock_sec_t secs = 0; clock_usec_t usecs = 0; clock_get_calendar_microtime(&secs, &usecs);
+    long z = (long)(secs / 86400) + 719468, era = z / 146097; unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153, day = doy - (153 * mp + 2) / 5 + 1, mon = mp < 10 ? mp + 3 : mp - 9;
+    unsigned year = (unsigned)(yoe + era * 400 + (mon <= 2)), sod = (unsigned)(secs % 86400);
+    snprintf(row, sizeof row, "RTC %04u-%02u-%02u %02u:%02u:%02u plat %d r%d rst%d st%d/%d pmic %d a%d c%u f%d file %d st%d e%d", year, mon, day,
+             sod / 3600, sod / 60 % 60, sod % 60, armdt_platform_rtc_stats[0], armdt_platform_rtc_stats[1], armdt_platform_rtc_stats[2],
+             armdt_platform_rtc_stats[3], armdt_platform_rtc_stats[4], &qcom_pmic_rtc_stats ? qcom_pmic_rtc_stats[0] : 0,
+             &qcom_pmic_rtc_stats ? qcom_pmic_rtc_stats[2] : 0, &qcom_pmic_rtc_stats ? (unsigned)qcom_pmic_rtc_stats[3] : 0,
+             &qcom_pmic_rtc_stats ? qcom_pmic_rtc_stats[5] : 0, &native_rtc_offset_status ? native_rtc_offset_status[0] : -9,
+             &native_rtc_offset_status ? native_rtc_offset_status[1] : 0, &native_rtc_offset_status ? native_rtc_offset_status[2] : 0);
     at = put(out, at, cap, row, sizeof row);
   }
   // Panel brightness (AppleARMBacklight.cpp): stage (3 published, negative the failed step), requests, last level, the levels read back from
