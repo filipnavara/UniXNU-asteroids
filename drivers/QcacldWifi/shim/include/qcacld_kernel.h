@@ -391,7 +391,9 @@ struct ratelimit_state { int interval, burst; };
 #define DEFINE_RATELIMIT_STATE(name, i, b) struct ratelimit_state name = { i, b }
 
 /* ---- threads (the runtime's kthreads) ---- */
-struct task_struct { char comm[16]; int pid; void *lx_thread; };
+/* A kthread (src/nw_kglue.c): a board thread holding the module lock while it runs (lx_thread_start). */
+struct task_struct { char comm[16]; int pid; void *lx_thread;
+  int (*fn)(void *); void *data; int started, should_stop, exited, ret; struct completion done; struct task_struct *next; };
 struct task_struct *lx_current(void);
 #define current lx_current()
 struct task_struct *kthread_create_on_node(int (*fn)(void *), void *data, int node, const char *fmt, ...);

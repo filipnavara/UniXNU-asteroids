@@ -29,3 +29,7 @@ int of_fdt_get_ddrtype(void) { return (int)nw_wifi_ddr_type; }
 /* The open-loop voltage of the chip's CX rail from the QMI capability reply; the board votes its rail to it. */
 u32 nw_wifi_cpr_mv;
 void nw_wifi_cpr_report(u32 mv) { nw_wifi_cpr_mv = mv; if (mv && nw_board && nw_board->cpr_voltage) nw_board->cpr_voltage(mv); }
+
+/* qcacld runs kthreads (scheduler, rx threads): the board gives lx_platform's thread callbacks and the module's entry points
+ * take the module lock (lx_enter/lx_leave). */
+unsigned nw_wifi_threads_wanted(void) { return 1; }

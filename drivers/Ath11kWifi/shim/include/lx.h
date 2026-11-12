@@ -169,7 +169,7 @@ static inline void list_splice_tail_init(struct list_head *l, struct list_head *
  * the wireless dispatcher invokes handlers after these critical sections. */
 typedef struct { int held; } spinlock_t;
 typedef struct { int state; unsigned writers; } rwlock_t;
-struct mutex { int held; };
+struct mutex { int held; int dispatcher; void *owner; };   /* dispatcher: held by the dispatcher (its work is deferred) */
 static inline void lx_cpu_relax(void) {
 #if defined(__aarch64__)
   __asm__ volatile("yield" ::: "memory");
@@ -235,8 +235,17 @@ static inline void write_unlock(rwlock_t *lock) { __atomic_store_n(&lock->state,
 #define write_unlock_irqrestore(l, f) do { (void)(f); write_unlock(l); } while (0)
 #define write_lock_bh(l) write_lock(l)
 #define write_unlock_bh(l) write_unlock(l)
-#define mutex_init(m) ((m)->held = 0)
+#define mutex_init(m) ((m)->held = 0, (m)->dispatcher = 0, (m)->owner = 0)
 #define mutex_destroy(m) WARN_ON((m)->held)
+/* Threads (lx_platform.module_lock and friends; without them there is one executor and these are no-ops): the board worker
+ * is the dispatcher (the only thread that runs lx_pump); lx_enter/lx_leave bracket its calls into the module. */
+void lx_enter(void);
+void lx_leave(void);
+int lx_on_dispatcher(void);
+void *lx_thread_self(void);
+void lx_threads_wake(void);                                   /* something module threads may wait for has changed */
+int lx_thread_start(void (*fn)(void *), void *arg);           /* fn(arg) on a new thread holding the module lock */
+__attribute__((noreturn)) void lx_thread_exit(void);          /* from such a thread: release the lock and end it */
 void lx_mutex_lock(struct mutex *mutex);
 void lx_mutex_unlock(struct mutex *mutex);
 bool lx_mutex_trylock(struct mutex *mutex);

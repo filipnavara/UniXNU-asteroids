@@ -103,20 +103,63 @@ static bool work_runnable(const struct work_struct *work) {
   for (int i = 0; i < g_nrunning; i++) if (g_running_queue[i] == work->queue) active++;
   return active < work->queue->max_active;
 }
+/* ---- threads (optional): one module lock; the board worker is the dispatcher, module threads never pump ---- */
+static void *g_dispatcher; static unsigned g_enter_depth;
+static inline bool threaded(void) { return lx_plat && lx_plat->module_lock && lx_plat->thread_self; }
+void *lx_thread_self(void) { return threaded() ? lx_plat->thread_self() : NULL; }
+int lx_on_dispatcher(void) { return !threaded() || lx_plat->thread_self() == g_dispatcher; }
+void lx_enter(void) {
+  if (!threaded()) return;
+  void *self = lx_plat->thread_self();
+  if (g_enter_depth && g_dispatcher == self) { g_enter_depth++; return; }   /* only the owner reads its own depth here */
+  lx_plat->module_lock(); g_dispatcher = self; g_enter_depth = 1;
+}
+void lx_leave(void) { if (threaded() && !--g_enter_depth) lx_plat->module_unlock(); }
+void lx_threads_wake(void) { if (threaded() && lx_plat->module_wake) lx_plat->module_wake(); }
+struct lx_thread_start_args { void (*fn)(void *); void *arg; };
+static void thread_tramp(void *p) {
+  struct lx_thread_start_args a = *(struct lx_thread_start_args *)p;
+  lx_plat->module_lock(); lx_free(p);
+  a.fn(a.arg);
+  lx_plat->module_unlock();
+}
+int lx_thread_start(void (*fn)(void *), void *arg) {
+  if (!threaded() || !lx_plat->thread_start) return -EOPNOTSUPP;
+  struct lx_thread_start_args *a = lx_alloc(sizeof *a, 0);
+  if (!a) return -ENOMEM;
+  a->fn = fn; a->arg = arg;
+  int r = lx_plat->thread_start(thread_tramp, a);
+  if (r) { lx_free(a); return -EAGAIN; }
+  return 0;
+}
+void lx_thread_exit(void) {
+  lx_plat->module_unlock();
+  if (lx_plat->thread_exit) lx_plat->thread_exit();
+  for (;;) lx_plat->sleep_ms(1000);
+}
+/* Mutexes: while the dispatcher holds one, work that could need it is deferred (mutexes_held); one a module thread holds is
+ * waited for in lx_idle, which lets the holder run. Taking one twice on the same thread is a bug, as on Linux. */
 bool lx_mutex_trylock(struct mutex *mutex) {
   int expected = 0;
   if (!__atomic_compare_exchange_n(&mutex->held, &expected, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return false;
-  __atomic_fetch_add(&mutexes_held, 1u, __ATOMIC_RELEASE); return true;
+  mutex->owner = lx_thread_self(); mutex->dispatcher = lx_on_dispatcher();
+  if (mutex->dispatcher) __atomic_fetch_add(&mutexes_held, 1u, __ATOMIC_RELEASE);
+  return true;
 }
 void lx_mutex_lock(struct mutex *mutex) {
-  /* Linux callbacks have one executor. Locked control work is deferred at
-   * dispatch; recursive acquisition signals an invalid callback/IO role. */
-  BUG_ON(!lx_mutex_trylock(mutex));
+  if (lx_mutex_trylock(mutex)) return;
+  /* One executor: locked control work is deferred at dispatch, so contention means a recursive acquisition (an invalid
+   * callback/IO role). With threads the holder is another thread unless it is this one. */
+  BUG_ON(!threaded() || mutex->owner == lx_thread_self());
+  while (!lx_mutex_trylock(mutex)) lx_idle(1);
 }
 void lx_mutex_unlock(struct mutex *mutex) {
   BUG_ON(!__atomic_load_n(&mutex->held, __ATOMIC_RELAXED));
+  int counted = mutex->dispatcher;
+  mutex->owner = NULL; mutex->dispatcher = 0;
   __atomic_store_n(&mutex->held, 0, __ATOMIC_RELEASE);
-  BUG_ON(!__atomic_fetch_sub(&mutexes_held, 1u, __ATOMIC_ACQ_REL));
+  if (counted) BUG_ON(!__atomic_fetch_sub(&mutexes_held, 1u, __ATOMIC_ACQ_REL));
+  lx_threads_wake();
 }
 void lx_rtnl_lock(void) { mutex_lock(&rtnl_mutex); }
 void lx_rtnl_unlock(void) { mutex_unlock(&rtnl_mutex); }
@@ -133,13 +176,15 @@ static u64 hrtimer_now(const struct hrtimer *timer) { return timer->clockid == 7
 void hrtimer_setup(struct hrtimer *timer, enum hrtimer_restart (*callback)(struct hrtimer *), int clockid, int mode) {
   (void)mode; INIT_LIST_HEAD(&timer->entry); timer->function = callback; timer->clockid = clockid; timer->armed = false;
 }
+static void wait_not_running(const void *p);
 int hrtimer_cancel(struct hrtimer *timer) {
-  /* Callbacks execute on this dispatcher, so cancelling one's own callback is invalid. */
-  BUG_ON(is_running(timer));
+  /* Callbacks execute on the dispatcher: cancelling one's own callback there is invalid; a module thread waits for it. */
   int was = timer->armed;
   if (was) { timer->armed = false; list_del_init(&timer->entry); }
+  wait_not_running(timer);
   return was;
 }
+static void wake_dispatcher_if_remote(void) { if (!lx_on_dispatcher()) lx_threads_wake(); }
 void hrtimer_start_range_ns(struct hrtimer *timer, ktime_t time, u64 slack, int mode) {
   (void)slack;
   if (timer->armed) { list_del_init(&timer->entry); timer->armed = false; }
@@ -147,7 +192,7 @@ void hrtimer_start_range_ns(struct hrtimer *timer, ktime_t time, u64 slack, int 
   if (mode & HRTIMER_MODE_REL) {
     u64 now = hrtimer_now(timer); timer->expires = value > (u64)INT64_MAX - now ? (u64)INT64_MAX : now + value;
   } else timer->expires = value;
-  timer->armed = true; list_add_tail(&timer->entry, &g_hrtimers);
+  timer->armed = true; list_add_tail(&timer->entry, &g_hrtimers); wake_dispatcher_if_remote();
 }
 u64 hrtimer_forward_now(struct hrtimer *timer, ktime_t interval) {
   u64 now = hrtimer_now(timer);
@@ -207,7 +252,7 @@ int lx_queue_work_on(struct workqueue_struct *queue, struct work_struct *w) {
   if (w->queued) return 0;
   BUG_ON(!queue || !w->func);
   w->queue = queue; w->ticket = ++g_work_ticket; w->queued = 1;
-  list_add_tail(&w->entry, &g_work); return 1;
+  list_add_tail(&w->entry, &g_work); wake_dispatcher_if_remote(); return 1;
 }
 int lx_queue_work(struct work_struct *w) { return lx_queue_work_on(system_wq, w); }
 int lx_cancel_work(struct work_struct *w) { if (!w->queued) return 0; w->queued = 0; list_del_init(&w->entry); return 1; }
@@ -216,7 +261,7 @@ int lx_queue_delayed_on(struct workqueue_struct *queue, struct delayed_work *d, 
   BUG_ON(!queue || !d->work.func);
   if (!ms) return lx_queue_work_on(queue, &d->work);
   d->work.queue = queue;
-  list_add_tail(&d->work.entry, &g_timers); d->armed = 1; d->due = lx_now_ms() + ms; return 1; }
+  list_add_tail(&d->work.entry, &g_timers); d->armed = 1; d->due = lx_now_ms() + ms; wake_dispatcher_if_remote(); return 1; }
 int lx_queue_delayed(struct delayed_work *d, unsigned long ms) { return lx_queue_delayed_on(system_wq, d, ms); }
 int lx_cancel_delayed(struct delayed_work *d) {
   int was = d->armed; if (was) { d->armed = 0; list_del_init(&d->work.entry); } return lx_cancel_work(&d->work) | was; }
@@ -235,6 +280,13 @@ static bool work_ticket_pending(const void *target, struct workqueue_struct *que
   return false;
 }
 bool lx_flush_work(struct work_struct *work) {
+  /* A module thread waits until the dispatcher ran it (queued or running further out on the dispatcher's stack). */
+  if (!lx_on_dispatcher()) {
+    if (!work->queued && !is_running(work)) return false;
+    u64 ticket = work->queued ? work->ticket : g_work_ticket;
+    while (work_ticket_pending(work, NULL, ticket)) lx_idle(1);
+    return true;
+  }
   /* All running callbacks are ancestors on this dispatcher. Waiting for an
    * ancestor cannot make progress, just as flushing one's own Linux work. */
   BUG_ON(is_running(work));
@@ -246,8 +298,10 @@ bool lx_flush_work(struct work_struct *work) {
   flushing_depth--;
   return true;
 }
-bool lx_cancel_work_sync(struct work_struct *work) { BUG_ON(is_running(work)); return lx_cancel_work(work); }
-bool lx_cancel_delayed_sync(struct delayed_work *work) { BUG_ON(is_running(&work->work)); return lx_cancel_delayed(work); }
+/* From a module thread a running callback is waited for (it runs on the dispatcher); on the dispatcher it is an ancestor. */
+static void wait_not_running(const void *p) { if (lx_on_dispatcher()) BUG_ON(is_running(p)); else while (is_running(p)) lx_idle(1); }
+bool lx_cancel_work_sync(struct work_struct *work) { bool r = lx_cancel_work(work); wait_not_running(work); return r; }
+bool lx_cancel_delayed_sync(struct delayed_work *work) { bool r = lx_cancel_delayed(work); wait_not_running(&work->work); return r; }
 bool lx_flush_delayed(struct delayed_work *work) {
   if (work->armed) {
     struct workqueue_struct *queue = work->work.queue;
@@ -257,6 +311,7 @@ bool lx_flush_delayed(struct delayed_work *work) {
 }
 void lx_flush_workqueue(struct workqueue_struct *queue) {
   BUG_ON(!queue);
+  if (!lx_on_dispatcher()) { u64 ticket = g_work_ticket; while (work_ticket_pending(NULL, queue, ticket)) lx_idle(1); return; }
   for (int i = 0; i < g_nrunning; i++) BUG_ON(g_running_queue[i] == queue);
   u64 ticket = g_work_ticket;
   BUG_ON(flushing_depth >= ARRAY_SIZE(flushing));
@@ -346,6 +401,7 @@ static void where(int kind, const void *fn) {
 /* The dispatcher: interrupts first, then due timers, then one round of queued work. */
 int lx_pump(void) {
   int ran = 0;
+  if (!lx_on_dispatcher()) return 0;   /* module threads wait; dispatcher work never runs on their stacks */
   if (g_depth > LX_MAX_DEPTH) return 0;
   { char here; if (!g_stack_top) g_stack_top = &here; unsigned long used = (unsigned long)(g_stack_top - &here); if (used > lx_stack_peak && used < (1UL << 24)) lx_stack_peak = used; if ((unsigned long)g_depth + 1 > lx_depth_peak) lx_depth_peak = g_depth + 1; }
   g_depth++;
@@ -423,7 +479,12 @@ int lx_pump(void) {
   where(0, 0);
   return ran;
 }
-void lx_idle(unsigned int ms) { lx_plat->sleep_ms(ms); }
+/* With threads the module lock is released while sleeping (module_wait); module threads sleep at least 10 ms between checks
+ * unless something wakes them (completions, wake_up, mutex unlock, queued work). */
+void lx_idle(unsigned int ms) {
+  if (threaded() && lx_plat->module_wait) { lx_plat->module_wait(lx_on_dispatcher() || ms >= 10 ? ms : 10); return; }
+  lx_plat->sleep_ms(ms);
+}
 void lx_delay_ms(unsigned int ms) {
   u64 end = lx_now_ms() + ms;
   while (lx_now_ms() < end) { if (!lx_pump()) lx_idle(1); }

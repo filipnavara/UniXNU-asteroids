@@ -134,9 +134,9 @@ static inline void pm_runtime_put_noidle(struct device *d) { (void)d; }
 /* waiting: wait_event runs the dispatcher (lx_pump) instead of sleeping */
 typedef struct { int unused; } wait_queue_head_t;
 #define init_waitqueue_head(w) ((void)(w))
-#define wake_up(w) ((void)(w))
-#define wake_up_all(w) ((void)(w))
-#define wake_up_interruptible(w) ((void)(w))
+#define wake_up(w) ((void)(w), lx_threads_wake())
+#define wake_up_all(w) ((void)(w), lx_threads_wake())
+#define wake_up_interruptible(w) ((void)(w), lx_threads_wake())
 extern void (*lx_log_tap)(int level, const char *line);   /* sees every line after it is logged */
 int lx_pump(void);               /* runs one round of ready work; returns nonzero if anything ran */
 void lx_irq_polling(int enabled);
@@ -162,8 +162,9 @@ static inline void init_completion(struct completion *c) { __atomic_store_n(&c->
 static inline void complete(struct completion *c) {
   unsigned old = __atomic_load_n(&c->done, __ATOMIC_RELAXED);
   while (old != UINT_MAX && !__atomic_compare_exchange_n(&c->done, &old, old + 1, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) { }
+  lx_threads_wake();
 }
-static inline void complete_all(struct completion *c) { __atomic_store_n(&c->done, UINT_MAX, __ATOMIC_RELEASE); }
+static inline void complete_all(struct completion *c) { __atomic_store_n(&c->done, UINT_MAX, __ATOMIC_RELEASE); lx_threads_wake(); }
 static inline bool try_wait_for_completion(struct completion *c) {
   unsigned old = __atomic_load_n(&c->done, __ATOMIC_ACQUIRE);
   while (old) {

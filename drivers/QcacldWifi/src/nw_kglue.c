@@ -11,7 +11,12 @@
 
 /* ---- runtime additions ---- */
 static struct task_struct g_dispatcher_task = { .comm = "wlan-dispatch", .pid = 1 };
-struct task_struct *lx_current(void) { return &g_dispatcher_task; }
+static struct task_struct *g_tasks_head(void);
+struct task_struct *lx_current(void) {
+  void *self = lx_thread_self();
+  if (self) for (struct task_struct *t = g_tasks_head(); t; t = t->next) if (t->lx_thread == self) return t;
+  return &g_dispatcher_task;
+}
 struct in_device *lx_in_dev(const struct net_device *dev) { (void)dev; return NULL; }     /* no address glue yet: no ARP offload */
 struct inet6_dev *lx_in6_dev(const struct net_device *dev) { (void)dev; return NULL; }    /* no NS offload */
 size_t lx_ksize(const void *p) { (void)p; return 0; }   /* the runtime's allocations carry no size: qdf only logs it */
@@ -347,13 +352,49 @@ int crypto_aead_encrypt(struct aead_request *req) { (void)req; return -ENOENT; }
 struct wmi_unified;
 void wmi_dbr_attach_tlv(struct wmi_unified *wmi_handle) { (void)wmi_handle; }
 
-/* ---- threads: not yet (the module's thread model is the next step); creation fails so qcacld reports it ---- */
-struct task_struct *kthread_create_on_node(int (*fn)(void *), void *data, int node, const char *fmt, ...) {
-  (void)fn; (void)data; (void)node;
-  lx_log(3, "wlan: kthread %s: no threads on this port yet", fmt);
-  return ERR_PTR(-EOPNOTSUPP);
+/* ---- kthreads: board threads under the module lock (runtime lx_thread_start; see lx_rt.c's thread model) ----
+ * A new kthread waits (lock released) until wake_up_process, as Linux creates them stopped. `current` is the calling thread's
+ * task, the dispatcher's otherwise. The task list is only touched under the module lock. */
+static struct task_struct *g_tasks;
+static struct task_struct *g_tasks_head(void) { return g_tasks; }
+static int g_next_pid = 100;
+static void task_unlist(struct task_struct *t) {
+  for (struct task_struct **p = &g_tasks; *p; p = &(*p)->next) if (*p == t) { *p = t->next; break; }
 }
-int wake_up_process(struct task_struct *t) { (void)t; return 0; }
-int kthread_stop(struct task_struct *t) { (void)t; return 0; }
-bool kthread_should_stop(void) { return true; }
-void kthread_complete_and_exit(struct completion *c, long code) { (void)code; if (c) complete(c); for (;;) lx_idle(1000); }
+static void task_finish(struct task_struct *t, int ret) {
+  t->ret = ret; t->exited = 1; task_unlist(t); complete_all(&t->done);
+}
+static void kthread_tramp(void *arg) {
+  struct task_struct *t = arg;
+  t->lx_thread = lx_thread_self(); t->next = g_tasks; g_tasks = t;
+  while (!READ_ONCE(t->started) && !READ_ONCE(t->should_stop)) lx_idle(10);
+  int ret = READ_ONCE(t->should_stop) ? -EINTR : t->fn(t->data);
+  task_finish(t, ret);
+}
+struct task_struct *kthread_create_on_node(int (*fn)(void *), void *data, int node, const char *fmt, ...) {
+  (void)node;
+  struct task_struct *t = kzalloc(sizeof *t, GFP_KERNEL);
+  if (!t) return ERR_PTR(-ENOMEM);
+  va_list ap; va_start(ap, fmt); vsnprintf(t->comm, sizeof t->comm, fmt, ap); va_end(ap);
+  t->fn = fn; t->data = data; t->pid = g_next_pid++; init_completion(&t->done);
+  int r = lx_thread_start(kthread_tramp, t);
+  if (r) { lx_log(3, "wlan: kthread %s: start failed: %d", t->comm, r); kfree(t); return ERR_PTR(r); }
+  return t;
+}
+int wake_up_process(struct task_struct *t) {
+  if (!t || READ_ONCE(t->started)) return 0;
+  WRITE_ONCE(t->started, 1); lx_threads_wake(); return 1;
+}
+bool kthread_should_stop(void) { return READ_ONCE(lx_current()->should_stop) != 0; }
+/* Linux: sets should_stop, wakes the thread, waits for it to end and returns its result; the task is gone afterwards. */
+int kthread_stop(struct task_struct *t) {
+  WRITE_ONCE(t->should_stop, 1); lx_threads_wake();
+  wait_for_completion(&t->done);
+  int ret = t->ret; kfree(t); return ret;
+}
+void kthread_complete_and_exit(struct completion *c, long code) {
+  struct task_struct *t = lx_current();
+  if (c) complete(c);
+  if (t != &g_dispatcher_task) task_finish(t, (int)code);
+  lx_thread_exit();
+}
