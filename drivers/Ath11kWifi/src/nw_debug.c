@@ -61,6 +61,20 @@ void nw_fw_diag(const void *data, unsigned long len) {
     p += head + padded; len -= head + padded;
   }
 }
+/* Logs every kept record whose message id lies in [lo, hi] (Data.msc), oldest first, at most max of them: the firmware's own account of
+ * the host's ring setup (htt_tgt_rx.c 1261-1269, wal_rx_control.c 1103-1116) to compare with the vendor host's (worker only). */
+void nw_fw_diag_dump_ids(unsigned lo, unsigned hi, unsigned max) {
+  const unsigned have = nw_fwd_total < NW_FWD_RECORDS ? nw_fwd_total : NW_FWD_RECORDS;
+  unsigned shown = 0;
+  if (!nw_fwd) return;
+  for (unsigned i = nw_fwd_total - have; i != nw_fwd_total && shown < max; i++) {
+    const struct nw_fwd *r = &nw_fwd[i % NW_FWD_RECORDS]; const unsigned id = r->w1 >> 16, pay = r->w1 & 0xff;
+    if (id < lo || id > hi) continue;
+    shown++;
+    lx_log(6, "fwd %06x %u/%u/%u: %x %x %x %x %x %x", r->w0 & 0xffffff, r->w0 >> 24, id, pay, r->a[0], r->a[1], r->a[2], r->a[3], r->a[4], r->a[5]);
+  }
+  lx_log(6, "fw diag ids %u-%u: %u of %u kept records", lo, hi, shown, have);
+}
 /* Logs count records ending skip records before the newest, oldest first: "fwd <timestamp> <id>/<payload bytes>: args". */
 void nw_fw_diag_dump(unsigned skip, unsigned count) {
   const unsigned have = nw_fwd_total < NW_FWD_RECORDS ? nw_fwd_total : NW_FWD_RECORDS;
