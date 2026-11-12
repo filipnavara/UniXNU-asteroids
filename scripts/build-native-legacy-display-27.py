@@ -550,8 +550,10 @@ for stem, extra in [('CpuFreqProbe', ()), ('PanelProbe', ()), ('AdspProbe', ()),
                     ('GpuPowerProbe', adreno_flags + vote_flags)]:
     compile_cpp(KITS / (stem + '.cpp'), board_dir / (stem + '.o'), extra)
     board_objects.append(board_dir / (stem + '.o'))
-for stem in ('AsteroidsBacklight', 'ShengAudioService', 'ShengBattery'):
-    compile_cpp(KITS / (stem + '.cpp'), board_dir / (stem + '.o'))
+# WifiNet: sheng's network side of the WiFi module (en0, the wireless framework's requests, DHCP through the packet filter).
+for stem, extra in (('AsteroidsBacklight', ()), ('ShengAudioService', ()), ('ShengBattery', ()),
+                    ('WifiNet', ('-I', str(KITS.resolve().parent / 'drivers/Ath11kWifi/include')))):
+    compile_cpp(KITS / (stem + '.cpp'), board_dir / (stem + '.o'), extra)
     run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func', f'--globalize-symbol=__GLOBAL__sub_I_{stem}.cpp',
          board_dir / (stem + '.o'), board_dir / (stem + '.late.o')])
     board_objects.append(board_dir / (stem + '.late.o'))

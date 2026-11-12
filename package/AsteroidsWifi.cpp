@@ -26,6 +26,9 @@
 #include <sys/kern_control.h>
 #include <sys/kpi_mbuf.h>
 #include "nw_abi.h"
+#include "BoardClasses.h"
+#include <libkern/OSKextLib.h>
+#include <mach/kmod.h>
 #include "nw_control_endpoint.h"
 #include "SmmuBypass.h"
 #include "AsteroidsRemote.h"
@@ -71,6 +74,12 @@ extern "C" void _enable_preemption(void);
 extern "C" {volatile int32_t native_wlan_stats[16]; char native_wlan_bss[224];}
 // The module's log: a ring of lines on the heap (the kernel's __DATA is tight), read by the boot log.
 extern "C" {char *native_wlan_lines; volatile uint32_t native_wlan_lines_n;}
+// The network side (WifiNet.cpp, sheng's): en0, the wireless framework's requests, DHCP. Its classes are registered late with the
+// kernel's module (its static initializer, which the build takes out of __mod_init_func), then the interface is made once the
+// station is up. It calls back here: native_wifi_logf, sheng_wifi_file (its join.txt), sheng_wifi_wake.
+extern kmod_info_t g_kernel_kmod_info;
+extern "C" void native_wifi_net_static_init(void) __asm__("__GLOBAL__sub_I_WifiNet.cpp");
+extern "C" void sheng_wifi_net_start(const uint8_t mac[6]);
 
 namespace {
 enum Stage {StThread = 1, StWpss = 2, StSmmu = 3, StDma = 4, StIrqs = 5, StStarted = 6, StInterface = 7, StScanned = 8};
@@ -917,6 +926,17 @@ extern "C" int asteroids_wifi_join_read(uint8_t **data, size_t *size);
 volatile int gConnectDone = -1;
 void connectDone(int result) {gConnectDone = result; wakeWorker();}
 struct Join {char ssid[33]; char key[65]; size_t ssidLen, keyLen; bool loaded, gaveUp; unsigned rounds; uint64_t next;} gJoin;
+bool gNetStarted;
+void netStart() {
+    struct nw_wifi_status status;
+    nw_wifi_status_get(&status);
+    if (const OSReturn r = OSKextRegisterBoardClasses(g_kernel_kmod_info.name, native_wifi_net_static_init)) {
+        logf(3, "wifi: network classes not registered: %d", (int)r);
+        return;
+    }
+    gNetStarted = true;
+    sheng_wifi_net_start(status.mac);
+}
 void joinStep() {
     if (gJoin.gaveUp || pNow() < gJoin.next) return;
     gJoin.next = pNow() + 5000;
@@ -1300,6 +1320,10 @@ void wifiThread(void *, wait_result_t) {
             powered = true;
             stage(StInterface);
             nw_wifi_power(1);
+            // wifi-net=0: no network side (the board's own join test, wifi-aj, then runs as before).
+            unsigned net = 1;
+            PE_parse_boot_argn("wifi-net", &net, sizeof net);
+            if (net) netStart();
             // wifi-scan-delay=N: the self-test scan N seconds after radio on instead of 2 (the firmware died 22.1 s after radio on and
             // 2.1 s after the scan's start in every boot, the scan always starting at 20.0 s: this tells the two apart), with the
             // firmware's log dumped at 25 s and 35 s.
@@ -1429,7 +1453,7 @@ void wifiThread(void *, wait_result_t) {
             native_wlan_stats[10] = gConnectDone;
             gConnectDone = -1;
         }
-        if (autoJoin && powered && scanAsked) joinStep();
+        if (autoJoin && powered && scanAsked && !gNetStarted) joinStep();   // with the network side, WifiNet joins (wifi-aj)
         if (!busy) {
             const unsigned wait = nw_wifi_wait_ms(gIrqs ? 1000 : 1);
             if (wait) waitWork(wait);
@@ -1438,6 +1462,37 @@ void wifiThread(void *, wait_result_t) {
     }
 }
 }  // namespace
+
+// ---- WifiNet's hooks ----
+extern "C" void native_wifi_logf(int level, const char *fmt, ...) {
+    char line[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    pLog(level, line);
+}
+extern "C" void sheng_wifi_wake(void) {wakeWorker();}   // a frame to send: the worker's next step takes it
+// join.txt (the unattended test's network, UNIXNU_WIFI_JOIN): from the Data add-on, which is installed a while after boot (EAGAIN until
+// then: waited for up to a minute on WifiNet's auto-join thread). Kept in one static copy, the read buffer cleared and freed.
+extern "C" int sheng_wifi_file(const char *name, const uint8_t **data, size_t *size) {
+    if (strcmp(name, "join.txt")) return pFwGet(name, data, size);
+    static uint8_t copy[160];
+    static size_t copied;
+    if (!copied) {
+        uint8_t *file = nullptr;
+        size_t length = 0;
+        int rc = EAGAIN;
+        for (unsigned waited = 0; (rc = asteroids_wifi_join_read(&file, &length)) == EAGAIN && waited < 60000; waited += 500) IOSleep(500);
+        if (rc || !file) return rc ? rc : ENOENT;
+        copied = length < sizeof copy ? length : sizeof copy;
+        memcpy(copy, file, copied);
+        bzero(file, length);
+        IOFreeData(file, length);
+    }
+    *data = copy; *size = copied;
+    return 0;
+}
 
 // The firmware files an owner may install on the Data volume (VFS; AsteroidsWifiFiles.c, built with the BSD flags).
 extern "C" int asteroids_wifi_vfs_read(const char *name, uint8_t **data, size_t *size);
