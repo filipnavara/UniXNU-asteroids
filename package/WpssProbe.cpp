@@ -420,6 +420,16 @@ bool start() {
     stage(StSmp2p);
 
     if ((rc = R::qmp("{class: image, res: load_state, name: wpss, val: on}"))) {fail(StLoadState, rc); return false;}
+    // wifi-vrm=1: the WLAN chip's supplies as icnss2 votes them (stock devicetree qcom,wcn6750: vdd-cx-mx = pm7550 S3B 968-1040 mV,
+    // vdd-1.8-xo = S1B 1856-2040 mV, vdd-1.3-rfa = S2B 1256-1408 mV): S3B at the top of its range, the others at their minimum.
+    unsigned vrm = 0;
+    PE_parse_boot_argn("wifi-vrm", &vrm, sizeof vrm);
+    if (vrm) {
+        char text[80];
+        const int a = R::voteVrm("smpb3", 1040), b = R::voteVrm("smpb1", 1856), c = R::voteVrm("smpb2", 1256);
+        snprintf(text, sizeof text, "smpb3 1040 %d, smpb1 1856 %d, smpb2 1256 %d", a, b, c);
+        note("vrm: ", text);
+    }
     stage(StLoadState);
     if ((rc = R::voteRails("cx.lvl", "mx.lvl", kLevelProxy, kLevelProxy))) {
         fail(StRails, rc); R::qmp("{class: image, res: load_state, name: wpss, val: off}"); return false;

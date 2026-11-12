@@ -701,6 +701,15 @@ int voteRails(const char *a, const char *b, uint32_t level_a, uint32_t level_b) 
     if (qcom_rpmh_level_index(&ra, level_a, &ia) || qcom_rpmh_level_index(&rb, level_b, &ib)) return -22;
     return voteResources(ra, rb, ia, ib, nullptr);
 }
+// A VRM regulator (cmd-db name, e.g. "smpb3") on at mv millivolts: one active request for its voltage (+0) and enable (+4) words.
+int voteVrm(const char *name, uint32_t mv) {
+    QcomRpmhResource r, e;
+    if (!gDb || !gDbRead) return -19;
+    if (qcom_cmd_db_find(gDb, kCmdDbSize, name, &r)) return -2;
+    e = r;
+    e.address = r.address + 4;
+    return voteResources(r, e, mv, 1, nullptr);
+}
 int pasBoot(const char *path, uint32_t pas, uint64_t base, uint64_t size, int32_t *kib, int32_t *scm_x0) {
     static Image image;  // a few KiB of header table: static, as the DSP's two
     bzero(&image, sizeof image);

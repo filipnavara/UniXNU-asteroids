@@ -29,6 +29,8 @@ int voteRails(const char *a, const char *b, uint32_t level_a, uint32_t level_b);
 // Returns 0, or -step (1 open, 2 parse, 3 init_image, 4 mem_setup, 5 load, 6 auth_and_reset); *kib gets the file size in KiB.
 int pasBoot(const char *path, uint32_t pas, uint64_t base, uint64_t size, int32_t *kib, int32_t *scm_x0);
 void pasShutdown(uint32_t pas);
+// A VRM regulator (cmd-db name) on at mv millivolts (an active vote); 0 or a negative error.
+int voteVrm(const char *name, uint32_t mv);
 // From any thread: makes the thread call asteroids_wpss_service() soon.
 void wakeWpss();
 }  // namespace asteroids_remote
