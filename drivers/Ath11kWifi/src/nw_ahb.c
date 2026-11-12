@@ -97,4 +97,6 @@ unsigned nw_wifi_wmi_mem = 1;
 unsigned nw_wifi_wmi_vendor;
 /* The vendor host's flow search engine setup after the rings (bit mask: 1 FSE setup, 2 FISA config, see tools/prepare-ath11k.sh); set by the board. */
 unsigned nw_wifi_fse;
+/* More of the vendor host's choices (bit mask, see tools/prepare-ath11k.sh) and the DDR type for the QMI host capability; set by the board. */
+unsigned nw_wifi_qmi_vendor, nw_wifi_ddr_type = 7;
 u32 nw_wifi_mhi_size;

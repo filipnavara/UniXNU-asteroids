@@ -184,6 +184,26 @@ s = s.replace(old, '\t{\n\t\textern unsigned nw_wifi_dp_vendor;\n\n\t\tif (!(nw_
 open(path, 'w').write(s)
 PY
 grep -q 'nw_wifi_dp_vendor & 8' $O/mac.c || { echo "mac.c dp vendor patch missed" >&2; exit 1; }
+# More of the vendor host's choices (audit), behind nw_wifi_qmi_vendor (board: wifi-qmi-vendor=MASK): 1/2/4 the QMI host capability
+# (qmi.c: host_build_type 2, ddr_type, no mem_cfg_mode); 8 no 11D offload scan (ath11k starts it in the first hw_scan, right before the
+# host scan; the vendor at vdev creation with a 3600 s period); 16 data stall detection on (pdev param 0x9b = 1, as the vendor always).
+python3 - "$O/mac.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '\tif (ar->regdom_set_by_user)\n\t\tgoto fin;\n'
+assert s.count(old) == 1, "mac.c 11d mark"
+s = s.replace(old, '\t{\n\t\textern unsigned nw_wifi_qmi_vendor;\n\n\t\tif (ar->regdom_set_by_user || (nw_wifi_qmi_vendor & 8))\n\t\t\tgoto fin;\n\t}\n', 1)
+old = '\t__ath11k_set_antenna(ar, ar->cfg_tx_chainmask, ar->cfg_rx_chainmask);\n'
+assert s.count(old) >= 1, "mac.c antenna mark"
+i = s.index('WMI_PDEV_PARAM_MESH_MCAST_ENABLE')
+j = s.index(old, i)
+s = s[:j] + ('\t{\n\t\textern unsigned nw_wifi_qmi_vendor;\n\n\t\tif (nw_wifi_qmi_vendor & 16) {\n'
+             '\t\t\tint r = ath11k_wmi_pdev_set_param(ar, 0x9b /* DATA_STALL_DETECT_ENABLE */, 1, pdev->pdev_id);\n\n'
+             '\t\t\tath11k_info(ab, "data stall detection on: %d\\n", r);\n\t\t}\n\t}\n\n') + s[j:]
+open(path, 'w').write(s)
+PY
+grep -q 'nw_wifi_qmi_vendor & 16' $O/mac.c || { echo "mac.c qmi vendor patch missed" >&2; exit 1; }
 # The capability reply carries the open-loop voltage the chip's CX rail needs (voltage_mv; icnss2 votes the "qcom,vreg_ol_cpr" rail, smpb3
 # here, to it). ath11k decodes it and drops it: the copy of qmi.c logs it and leaves it in nw_wifi_cpr_mv for the board.
 rm -f $O/qmi.c
@@ -258,7 +278,14 @@ struct nw_host_cap_req {
 \tstruct qmi_wlanfw_host_cap_req_msg_v01 base;
 \tu8 ddr_range_valid;
 \tstruct nw_ddr_range ddr_range[3];
+\tu8 host_build_type_valid;
+\tu32 host_build_type;
+\tu8 ddr_type_valid;
+\tu32 ddr_type;
 };
+/* the vendor's other host capability values (nw_wifi_qmi_vendor: 1 host_build_type 2, 2 ddr_type nw_wifi_ddr_type, 4 no
+ * mem_cfg_mode), see tools/prepare-ath11k.sh */
+extern unsigned nw_wifi_qmi_vendor, nw_wifi_ddr_type;
 static const struct qmi_elem_info nw_ddr_range_ei[] = {
 \t{ .data_type = QMI_UNSIGNED_8_BYTE, .elem_len = 1, .elem_size = sizeof(u64), .array_type = NO_ARRAY, .tlv_type = 0,
 \t  .offset = offsetof(struct nw_ddr_range, start) },
@@ -266,7 +293,7 @@ static const struct qmi_elem_info nw_ddr_range_ei[] = {
 \t  .offset = offsetof(struct nw_ddr_range, size) },
 \t{ .data_type = QMI_EOTI, .array_type = NO_ARRAY, .tlv_type = QMI_COMMON_TLV_TYPE },
 };
-static struct qmi_elem_info nw_host_cap_ei_buf[64];
+static struct qmi_elem_info nw_host_cap_ei_buf[72];
 static const struct qmi_elem_info *nw_host_cap_ei(void)
 {
 \tint n = 0;
@@ -281,7 +308,15 @@ static const struct qmi_elem_info *nw_host_cap_ei(void)
 \tnw_host_cap_ei_buf[n + 1] = (struct qmi_elem_info){ .data_type = QMI_STRUCT, .elem_len = 3,
 \t\t.elem_size = sizeof(struct nw_ddr_range), .array_type = STATIC_ARRAY, .tlv_type = 0x1F,
 \t\t.offset = offsetof(struct nw_host_cap_req, ddr_range), .ei_array = nw_ddr_range_ei };
-\tnw_host_cap_ei_buf[n + 2] = (struct qmi_elem_info){ .data_type = QMI_EOTI, .array_type = NO_ARRAY,
+\tnw_host_cap_ei_buf[n + 2] = (struct qmi_elem_info){ .data_type = QMI_OPT_FLAG, .elem_len = 1, .elem_size = sizeof(u8),
+\t\t.array_type = NO_ARRAY, .tlv_type = 0x20, .offset = offsetof(struct nw_host_cap_req, host_build_type_valid) };
+\tnw_host_cap_ei_buf[n + 3] = (struct qmi_elem_info){ .data_type = QMI_SIGNED_4_BYTE_ENUM, .elem_len = 1, .elem_size = sizeof(u32),
+\t\t.array_type = NO_ARRAY, .tlv_type = 0x20, .offset = offsetof(struct nw_host_cap_req, host_build_type) };
+\tnw_host_cap_ei_buf[n + 4] = (struct qmi_elem_info){ .data_type = QMI_OPT_FLAG, .elem_len = 1, .elem_size = sizeof(u8),
+\t\t.array_type = NO_ARRAY, .tlv_type = 0x2C, .offset = offsetof(struct nw_host_cap_req, ddr_type_valid) };
+\tnw_host_cap_ei_buf[n + 5] = (struct qmi_elem_info){ .data_type = QMI_UNSIGNED_4_BYTE, .elem_len = 1, .elem_size = sizeof(u32),
+\t\t.array_type = NO_ARRAY, .tlv_type = 0x2C, .offset = offsetof(struct nw_host_cap_req, ddr_type) };
+\tnw_host_cap_ei_buf[n + 6] = (struct qmi_elem_info){ .data_type = QMI_EOTI, .array_type = NO_ARRAY,
 \t\t.tlv_type = QMI_COMMON_TLV_TYPE };
 \treturn nw_host_cap_ei_buf;
 }
@@ -298,10 +333,15 @@ for a, b in (('\tstruct qmi_wlanfw_host_cap_req_msg_v01 req;\n',
               '\t\t\tnw_req.ddr_range[i].start = nw_wifi_ddr_range[2 * i];\n\t\t\tnw_req.ddr_range[i].size = nw_wifi_ddr_range[2 * i + 1];\n\t\t}\n'
               '\t\tath11k_info(ab, "host cap ddr range %llx+%llx, %llx+%llx, %llx+%llx\\n", nw_wifi_ddr_range[0],\n'
               '\t\t\t    nw_wifi_ddr_range[1], nw_wifi_ddr_range[2], nw_wifi_ddr_range[3], nw_wifi_ddr_range[4],\n'
-              '\t\t\t    nw_wifi_ddr_range[5]);\n\t}\n\n'
+              '\t\t\t    nw_wifi_ddr_range[5]);\n\t}\n'
+              '\tif (nw_wifi_qmi_vendor & 1) {\n\t\tnw_req.host_build_type_valid = 1;\n\t\tnw_req.host_build_type = 2;\n\t}\n'
+              '\tif (nw_wifi_qmi_vendor & 2) {\n\t\tnw_req.ddr_type_valid = 1;\n\t\tnw_req.ddr_type = nw_wifi_ddr_type;\n\t}\n'
+              '\tif (nw_wifi_qmi_vendor & 4)\n\t\treq.mem_cfg_mode_valid = 0;\n'
+              '\tath11k_info(ab, "host cap vendor 0x%x: build type %u ddr type %u mem cfg %s\\n", nw_wifi_qmi_vendor,\n'
+              '\t\t    nw_req.host_build_type, nw_req.ddr_type, req.mem_cfg_mode_valid ? "sent" : "not sent");\n\n'
               '\tret = qmi_txn_init(&ab->qmi.handle, &txn,\n\t\t\t   qmi_wlanfw_host_cap_resp_msg_v01_ei, &resp);\n'),
              ('\t\t\t       QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN,\n\t\t\t       qmi_wlanfw_host_cap_req_msg_v01_ei, &req);\n',
-              '\t\t\t       QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN + 3 + 3 * 16,\n\t\t\t       nw_host_cap_ei(), &nw_req);\n')):
+              '\t\t\t       QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN + 3 + 3 * 16 + 2 * 7,\n\t\t\t       nw_host_cap_ei(), &nw_req);\n')):
     assert body.count(a) == 1, a
     body = body.replace(a, b, 1)
 body += '\n#undef req'

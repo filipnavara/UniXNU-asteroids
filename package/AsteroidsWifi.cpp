@@ -48,6 +48,7 @@ extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
 extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
 extern "C" volatile uint32_t nw_wifi_mhi_size;
+extern "C" volatile unsigned nw_wifi_qmi_vendor, nw_wifi_ddr_type;  // the module's: more vendor choices, DDR type
 extern "C" volatile unsigned nw_wifi_dp_vendor;  // the module's: the vendor's data path choices (bit mask)
 extern "C" volatile unsigned nw_wifi_fse;  // the module's: the vendor's flow search engine setup (bit mask)
 extern "C" volatile unsigned nw_wifi_wmi_vendor;  // the module's: vendor WMI_INIT values (bit mask)
@@ -1149,6 +1150,13 @@ void wifiThread(void *, wait_result_t) {
     unsigned dpVendor = 0;
     PE_parse_boot_argn("wifi-dp-vendor", &dpVendor, sizeof dpVendor);
     nw_wifi_dp_vendor = dpVendor;
+    // wifi-qmi-vendor=MASK: 1 host_build_type, 2 ddr_type (wifi-ddr-type, default 7 = LPDDR4X, the 3a's /memory ddr_device_type),
+    // 4 no mem_cfg_mode, 8 no 11D offload scan, 16 data stall detection; 0 ath11k's.
+    unsigned qmiVendor = 0, ddrType = 7;
+    PE_parse_boot_argn("wifi-qmi-vendor", &qmiVendor, sizeof qmiVendor);
+    PE_parse_boot_argn("wifi-ddr-type", &ddrType, sizeof ddrType);
+    nw_wifi_qmi_vendor = qmiVendor;
+    nw_wifi_ddr_type = ddrType;
     // wifi-dp-poll=MS: the module's polled data path groups (REO, WBM, RXDMA rings: register reads and tail pointer writes into the
     // chip) every MS milliseconds instead of every round; the vendor host touches those registers only on an interrupt and under a
     // wake vote. The copy engines (WMI, HTT) are still polled every round.
