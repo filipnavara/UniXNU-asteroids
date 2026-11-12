@@ -1,3 +1,21 @@
+diff -ruN --exclude .git vendor-wlan/platform/cnss_utils/wlan_firmware_service_v01.c wlan/platform/cnss_utils/wlan_firmware_service_v01.c
+--- vendor-wlan/platform/cnss_utils/wlan_firmware_service_v01.c	2026-11-11 14:34:49
++++ wlan/platform/cnss_utils/wlan_firmware_service_v01.c	2026-11-12 16:12:06
+@@ -7104,6 +7104,7 @@
+ };
+ EXPORT_SYMBOL(wlfw_driver_async_data_ind_msg_v01_ei);
+ 
++#if 0 /* UniXNU: no devicetree, and the tables are linked into the module: no init of their own */
+ /**
+  * wlfw_is_valid_dt_node_found - Check if valid device tree node present
+  *
+@@ -7136,5 +7137,6 @@
+ }
+ 
+ module_init(wlfw_init);
++#endif
+ MODULE_LICENSE("GPL v2");
+ MODULE_DESCRIPTION("WLAN FW QMI service");
 diff -ruN --exclude .git vendor-wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
 --- vendor-wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c	2026-11-11 14:34:49
 +++ wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c	2026-11-12 16:01:40
@@ -98,6 +116,19 @@ diff -ruN --exclude .git vendor-wlan/qca-wifi-host-cmn/qdf/linux/src/qdf_crypto.
  	if (ret) {
  		qdf_err("aes_expandkey failed (%d)", ret);
  		return ret;
+diff -ruN --exclude .git vendor-wlan/qca-wifi-host-cmn/utils/nlink/inc/wlan_nlink_srv.h wlan/qca-wifi-host-cmn/utils/nlink/inc/wlan_nlink_srv.h
+--- vendor-wlan/qca-wifi-host-cmn/utils/nlink/inc/wlan_nlink_srv.h	2026-11-11 14:34:49
++++ wlan/qca-wifi-host-cmn/utils/nlink/inc/wlan_nlink_srv.h	2026-11-12 16:25:45
+@@ -81,6 +81,9 @@
+ 			int app_id, int mcgroup_id);
+ int nl_srv_bcast(struct sk_buff *skb, int mcgroup_id, int app_id);
+ 
++/* UniXNU: the runtime's cfg80211 exports its own nl80211hdr_put (nl80211 family); this one is cld80211's */
++#define nl80211hdr_put wlan_cld80211hdr_put
++
+ /**
+  * nl80211hdr_put() - API to fill genlmsg header
+  * @skb: Sk buffer
 diff -ruN --exclude .git vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
 --- vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c	2026-11-11 14:34:49
 +++ wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c	2026-11-12 16:04:10

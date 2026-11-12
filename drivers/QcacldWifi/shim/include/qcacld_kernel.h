@@ -589,4 +589,24 @@ struct kernel_param { const char *name; struct module *mod; const struct kernel_
 #define module_param_string(name, string, len, perm)
 #define module_param_named_unsafe(...)
 #define MODULE_PARM_DESC(...)
+
+/* ---- platform (icnss2 qmi.c) ---- */
+typedef u32 dev_t;
+#ifndef SZ_256
+#define SZ_256 0x100
+#endif
+#ifndef SZ_8K
+#define SZ_8K 0x2000
+#endif
+#ifndef devm_ioremap
+#define devm_ioremap(d, pa, n) lx_ioremap(pa, n)
+#endif
+int of_fdt_get_ddrtype(void);   /* the board's DDR type (icnss2 sends it in the host capability) */
+
+/* ---- Linux's AES library names: the runtime's aes_encrypt is hostap's (ctx, plain, crypt); Linux's (key, out, in) callers in
+ * qcacld get their own names (src/nw_kglue.c implements them on hostap's AES). */
+#define aes_encrypt lx_linux_aes_encrypt
+#define aes_decrypt lx_linux_aes_decrypt
+#define aes_preparekey lx_linux_aes_preparekey
+#define aes_prepareenckey lx_linux_aes_prepareenckey
 #endif

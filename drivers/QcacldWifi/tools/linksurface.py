@@ -28,19 +28,21 @@ def symbols(objs):
 
 
 q_def, q_undef, users = symbols(sorted((here / 'out/objs').glob('*.o')))
-runtime = [o for o in board.glob('*.o') if not re.match(r'(ath11k|mac80211)_', o.stem)]
+runtime = [o for o in board.glob('*.o') if not re.match(r'(ath11k|mac80211)_|nw_(ahb|wifi|sta|mac80211|debug|crypto_mac80211|mainline)$', o.stem)]  # ath11k's glue is replaced too
 r_def, r_undef, _ = symbols(runtime)
 kernel = {n for n in r_undef if not n.startswith('nwk_')} - r_def  # the runtime itself imports these from the kernel
 need = sorted(q_undef - q_def)
 have = [n for n in need if n in r_def]
 from_kernel = [n for n in need if n not in r_def and n in kernel]
 missing = [n for n in need if n not in r_def and n not in kernel]
+dup = sorted(q_def & r_def)   # defined twice: a clash when the runtime and the qcacld objects are linked together
 groups = collections.defaultdict(list)
 for n in missing:
     groups[re.match(r'[a-z0-9]*', n.lower())[0] or n[:3]].append(n)
 (here / 'out/linksurface.json').write_text(json.dumps(
-    {'needed': len(need), 'provided': have, 'kernel': from_kernel, 'missing': {n: sorted(users[n]) for n in missing}}, indent=1))
+    {'needed': len(need), 'provided': have, 'kernel': from_kernel, 'duplicate': dup, 'missing': {n: sorted(users[n]) for n in missing}}, indent=1))
 print(f'{len(q_def)} defined in qcacld objects; {len(need)} needed from outside: {len(have)} provided by the runtime, '
-      f'{len(from_kernel)} by the kernel (as for the runtime), {len(missing)} missing')
+      f'{len(from_kernel)} by the kernel (as for the runtime), {len(missing)} missing; {len(dup)} defined twice'
+      + (': ' + ' '.join(dup) if dup else ''))
 for g, ns in sorted(groups.items(), key=lambda kv: -len(kv[1])):
     print(f'{len(ns):4d} {g}: ' + ' '.join(ns))

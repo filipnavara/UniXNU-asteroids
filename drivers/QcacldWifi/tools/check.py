@@ -40,24 +40,33 @@ for name, target in (('net/cnss2.h', 'cnss2.h'), ('net/cnss_utils.h', 'cnss_util
     link = pi / name; link.parent.mkdir(parents=True, exist_ok=True)
     if not link.exists(): link.symlink_to(wlan / 'platform/inc' / target)
 srcs = [o[:-2] + '.c' for o in (here / 'out/objs.txt').read_text().split() if o and (W / (o[:-2] + '.c')).exists()]
+# The platform side: vendor platform sources (config/platform-sources.txt, relative to the wlan dir) and the port's own src/*.c,
+# built like the vendor's platform modules (their include dirs, not qcacld's flags).
+plat_src = [str(wlan / l.strip()) for l in (here / 'config/platform-sources.txt').read_text().splitlines()
+            if l.strip() and not l.startswith('#')] + [str(f) for f in sorted((here / 'src').glob('*.c'))]
+plat_flags = ['-DCONFIG_ICNSS2_QMI', '-DCONFIG_CNSS_OUT_OF_TREE', '-I', str(here / 'src'), '-I', str(A / 'src'), '-I', str(wlan / 'platform/inc'),
+              '-I', str(wlan / 'platform/cnss_utils'), '-I', str(wlan / 'platform/icnss2')]
+srcs += plat_src
 srcs = [s for s in srcs if only in s]
+def flags_for(src):
+    return plat_flags if src in plat_src else vendor
 
 if mode == 'one':
-    r = subprocess.run([clang, '-fsyntax-only', '-ferror-limit=60', *base, *vendor, str(W / srcs[0])], capture_output=True, text=True, cwd=W)
+    r = subprocess.run([clang, '-fsyntax-only', '-ferror-limit=60', *base, *flags_for(srcs[0]), str(W / srcs[0])], capture_output=True, text=True, cwd=W)
     for l in r.stderr.splitlines():
         if 'error' in l: print(l.replace(str(wlan) + '/', '')[:240])
     raise SystemExit
 
 def run(src):
     if mode == 'deps':
-        r = subprocess.run([clang, '-M', '-MG', *base, *vendor, str(W / src)], capture_output=True, text=True, cwd=W)
+        r = subprocess.run([clang, '-M', '-MG', *base, *flags_for(src), str(W / src)], capture_output=True, text=True, cwd=W)
         files = r.stdout.replace('\\\n', ' ').split(':', 1)[-1].split()
         return src, [f for f in files if not f.startswith('/') and not (W / f).exists()]
     if mode == 'objs':
-        o = here / 'out/objs' / (src.replace('../', '').replace('/', '__')[:-2] + '.o'); o.parent.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run([clang, '-c', *base, *vendor, str(W / src), '-o', str(o)], capture_output=True, text=True, cwd=W)
+        o = here / 'out/objs' / ((('port__' + Path(src).name) if src.startswith(str(here / 'src')) else src.replace(str(wlan) + '/', '').replace('../', '').replace('/', '__'))[:-2] + '.o'); o.parent.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run([clang, '-c', *base, *flags_for(src), str(W / src), '-o', str(o)], capture_output=True, text=True, cwd=W)
     else:
-        r = subprocess.run([clang, '-fsyntax-only', '-ferror-limit=0', *base, *vendor, str(W / src)], capture_output=True, text=True, cwd=W)
+        r = subprocess.run([clang, '-fsyntax-only', '-ferror-limit=0', *base, *flags_for(src), str(W / src)], capture_output=True, text=True, cwd=W)
     return src, [l for l in r.stderr.splitlines() if 'error:' in l]
 
 with ThreadPoolExecutor(12) as ex:
