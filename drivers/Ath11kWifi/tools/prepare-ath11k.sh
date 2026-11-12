@@ -363,7 +363,8 @@ PY
 # host memory, max search 2, IPv4-compatible IPv6 prefix, the default Toeplitz key) and then RX_FISA_CFG (0x15: FISA v2 on, aggregation
 # limit 15, timeout 0xffffffff). ath11k sends neither; the firmware's receive path (whalRxMpduPop logs "fse_watchdog") may count on the
 # engine being set up. The copy of dp_rx.c sends them once, after pdev 0's rings, by the bits of nw_wifi_fse (board: wifi-fse=MASK;
-# 1 FSE setup, 2 FISA config; 0 neither).
+# 1 FSE setup, 2 FISA config, 4 the table in CMEM as the vendor asks when the firmware has service 262: base 0, the firmware
+# answers with the CMEM base; 0 none).
 python3 - "$O/dp_rx.c" <<'PY'
 import sys
 path = sys.argv[1]
@@ -409,13 +410,15 @@ static void nw_htt_fse_setup(struct ath11k_base *ab)
 \t\tmemset(table, 0, 128 * 64);
 \t\tw[0] = 0x12 /* RX_FSE_SETUP_CFG, pdev 0 */;
 \t\tw[1] = 128 | 2 << 20 | 2 << 28; /* records, max search, HTT_RX_IPV4_COMPATIBLE_IPV6 */
-\t\tw[2] = lower_32_bits(paddr);
-\t\tw[3] = upper_32_bits(paddr);
+\t\tif (!(nw_wifi_fse & 4)) {
+\t\t\tw[2] = lower_32_bits(paddr);
+\t\t\tw[3] = upper_32_bits(paddr);
+\t\t}
 \t\tfor (i = 0; i < 10; i++)
 \t\t\tw[4 + i] = key[4 * i] | key[4 * i + 1] << 8 | key[4 * i + 2] << 16 | (u32)key[4 * i + 3] << 24;
 \t\tw[13] &= 0x07ffffff;
 \t\tret = nw_htt_send_words(ab, w, 14);
-\t\tath11k_info(ab, "fse: setup table %pad: %d\\n", &paddr, ret);
+\t\tath11k_info(ab, "fse: setup table %s %pad: %d\\n", (nw_wifi_fse & 4) ? "in CMEM, not" : "at", &paddr, ret);
 \t}
 \tif (nw_wifi_fse & 2) {
 \t\tconst u32 c[3] = { 0x15 /* RX_FISA_CFG, pdev 0 */, 1 | 15 << 1 /* FISA v2, aggregation limit */, 0xffffffff };
@@ -433,4 +436,18 @@ s = s.replace(old, "\tif (mac_id == 0 && nw_wifi_fse)\n\t\tnw_htt_fse_setup(ab);
 open(path, 'w').write(s)
 PY
 grep -q 'nw_htt_fse_setup(ab);' $O/dp_rx.c || { echo "dp_rx.c fse patch missed" >&2; exit 1; }
+# The firmware's HTT messages ath11k does not handle, with their first words (the vendor's flow table in CMEM: the firmware answers the
+# setup with HTT_T2H_MSG_TYPE_FSE_CMEM_BASE_SEND 0x27, the table's CMEM base).
+python3 - "$O/dp_rx.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '\t\tath11k_warn(ab, "htt event %d not handled\\n", type);\n'
+assert s.count(old) == 1, "dp_rx.c htt default mark"
+s = s.replace(old, '\t\tath11k_warn(ab, "htt event %d not handled: %08x %08x %08x %08x (%u bytes)\\n", type, resp->version_msg.version,\n'
+              '\t\t\t    skb->len > 4 ? ((u32 *)skb->data)[1] : 0, skb->len > 8 ? ((u32 *)skb->data)[2] : 0,\n'
+              '\t\t\t    skb->len > 12 ? ((u32 *)skb->data)[3] : 0, skb->len);\n', 1)
+open(path, 'w').write(s)
+PY
+grep -q 'not handled: %08x' $O/dp_rx.c || { echo "dp_rx.c htt default patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"

@@ -1139,7 +1139,7 @@ void wifiThread(void *, wait_result_t) {
     unsigned wmiVendor = 0;
     PE_parse_boot_argn("wifi-wmi-vendor", &wmiVendor, sizeof wmiVendor);
     nw_wifi_wmi_vendor = wmiVendor;
-    // wifi-fse=MASK: the vendor host's flow search engine setup after the rings (1 FSE setup, 2 FISA config), 0 none.
+    // wifi-fse=MASK: the vendor host's flow search engine setup after the rings (1 FSE setup, 2 FISA config, 4 table in CMEM), 0 none.
     unsigned fse = 0;
     PE_parse_boot_argn("wifi-fse", &fse, sizeof fse);
     nw_wifi_fse = fse;
