@@ -1,12 +1,13 @@
 # UniXNU-asteroids
 
 [UniXNU](https://github.com/UniXNU/UniXNU) device repository for the **Nothing Phone (3a)** (`asteroids`, Qualcomm
-SM7635 "Volcano"). Work in progress: not hardware-complete, and nothing here is meant to be flashed yet.
+SM7635 "Volcano"). Work in progress: not hardware-complete, and nothing here is meant to be flashed yet (images are booted with
+`fastboot boot`; the OS lives in `userdata`).
 
 | Repository | Contents |
 |---|---|
-| [rootstockos/uefi-asteroids](https://github.com/rootstockos/uefi-asteroids) (branch `asteroids`) | Mu-Silicium UEFI port: `VolcanoPkg` and `asteroidsPkg` |
-| [rootstockos/UniXNU](https://github.com/rootstockos/UniXNU) | the UniXNU core fork the port builds with: v3/v4 boot images, the payload carried in the kernel image, bring-up patches, CI |
+| [filipnavara/uefi-asteroids](https://github.com/filipnavara/uefi-asteroids) (branch `asteroids-8gb`) | Mu-Silicium UEFI port: `VolcanoPkg` and `asteroidsPkg` |
+| [filipnavara/UniXNU](https://github.com/filipnavara/UniXNU) (branch `asteroids-resync`) | the UniXNU core fork the port builds with: v3/v4 boot images, the payload carried in the kernel image, bring-up patches, CI |
 | [rootstockos/UniXNU-sm7635-common](https://github.com/rootstockos/UniXNU-sm7635-common) | the shared SM7635 profile (device format 2): CPUs, GIC, UFS and Adreno 810 resources |
 | this repository | `board.toml`, `dts/asteroids.dts`, kernel defconfigs, board XNU patches, device package (`kits/asteroids`), device scripts |
 
@@ -16,18 +17,27 @@ UniXNU's:
 
 | Module | Repository | Use |
 |---|---|---|
-| `drivers/ShengUfs` | [rootstockos/NativeUfs](https://github.com/rootstockos/NativeUfs) (branch `asteroids`) | UFS root in `userdata` |
-| `drivers/Adreno740` | [rootstockos/NativeAdreno](https://github.com/rootstockos/NativeAdreno) (branch `asteroids`) | Adreno 810 (gen8): GMU, ring, submits and the user client |
-| `drivers/ArmDTPlatform` | [rootstockos/ArmDTPlatform](https://github.com/rootstockos/ArmDTPlatform) (branch `asteroids`) | Platform expert; forwards the wall clock to the PMIC RTC (counter + offset on Data) |
+| `drivers/ShengUfs` | [filipnavara/NativeUfs](https://github.com/filipnavara/NativeUfs) (branch `asteroids-resync`) | UFS root in `userdata` |
+| `drivers/Adreno740` | [filipnavara/NativeAdreno](https://github.com/filipnavara/NativeAdreno) (branch `asteroids-sync-20261112`) | Adreno 810 (gen8): GMU, ring, submits and the user client |
+| `drivers/ArmDTPlatform` | [filipnavara/ArmDTPlatform](https://github.com/filipnavara/ArmDTPlatform) (branch `asteroids-resync`) | Platform expert; forwards the wall clock to the PMIC RTC (counter + offset on Data) |
 | `drivers/ShengHidInput` | [UniXNU/ShengHidInput](https://github.com/UniXNU/ShengHidInput) | HID touch and buttons |
-| `kits/AdrenoFirmware` | [rootstockos/AdrenoFirmware](https://github.com/rootstockos/AdrenoFirmware) (branch `asteroids`) | GMU/HFI kit with the A8xx performance table and votes |
+| `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids-resync`) | GOP framebuffer and the GPU copy presenter |
+| `kits/AdrenoFirmware` | [filipnavara/AdrenoFirmware](https://github.com/filipnavara/AdrenoFirmware) (branch `asteroids`) | GMU/HFI kit with the A8xx performance table and votes |
 
-## State (2026-10-26)
+## State (2026-11-12)
 
-Booted with `fastboot boot`; the OS images are flashed to `userdata`. iPadOS 17.7.11 boots from UFS to the desktop on all
-eight cores. The render server composites on the Adreno 810 through Metal (metal2vulkan and Turnip), the GPU copies each
-frame to the panel, and touch works. The frame rate is still under 60. Test results are in `docs/asteroids-gpu-gen8.md` and
-`docs/asteroids-touch.md` of rootstockos/iosonandng; `porting.toml` records each area.
+**iPadOS 27.0.1 (24A446, the iPad17,3 images)** boots from UFS to the home screen on all eight cores (2026-11-11): touch and
+buttons work, the GPU add-on renders through Metal on the Adreno 810 (metal2vulkan and Turnip), the system apps are there,
+icons load (slowly: CoreImage runs on the CPU for them) and the wallpaper shows on the home and lock screens. Open issues:
+
+- graphic artifacts in GPU-rendered content; zero-copy scanout (`dpu-scanout=2`) is off;
+- one boot showed an early GPU stall after which new processes could not get a GPU address space (upstream Adreno740's
+  recovery work, merged on 2026-11-12, targets it; the sync is not yet booted);
+- no network: Wi-Fi (WCN6750, an ath11k port) is in bring-up on the `asteroids-wifi` branch; the firmware asserts during the
+  first scan (see `porting.toml`, area `network`).
+
+iPadOS 17.7.11 (21H461) remains the board's default profile and boots to the desktop as before. `porting.toml` records each
+area; older test results are in `docs/asteroids-gpu-gen8.md` and `docs/asteroids-touch.md` of rootstockos/iosonandng.
 
 Several vendor drivers are disabled in the UEFI port for bring-up; `Platforms/Nothing/asteroidsPkg/PORTING.md` there
 lists them and why.
@@ -45,7 +55,12 @@ From the UniXNU checkout, with UniXNU-sm7635-common next to this repository (`lo
 ./unixnu bootimg -D ../UniXNU-asteroids --uefi ../uefi-asteroids --dtb /path/to/live.dtb
 ```
 
-Outputs are under `out/asteroids/ipados-17.7.11-21H461/asteroids/`. The kernel builds in CI (rootstockos/UniXNU's macOS
+Outputs are under `out/asteroids/ipados-17.7.11-21H461/asteroids/`.
+
+For iPadOS 27 add `--os ipados-27.0.1-24A446` to each command (outputs under `out/asteroids/ipados-27.0.1-24A446/asteroids_ios27/`).
+The GPU add-on build needs on `PATH` bison 3.8.2 (Xcode's 2.3 fails ir3_parser), glslang's `glslangValidator`, a `glslc`, and
+the Rust `rust-src` component. A first boot, or one after the data protection settings change, needs a payload built with
+`--kernel-arg data-reset=1`. The kernel builds in CI (rootstockos/UniXNU's macOS
 workflow, with `scripts/ci-bootstrap-candidate.sh` as its pre-build step); the payload step compiles `dts/asteroids.dts`
 with `dtc` and writes the ADT with UniXNU's shared generator.
 
