@@ -185,6 +185,12 @@ void lx_kfree_skb_reason(struct sk_buff *s, unsigned reason) {
       lx_log(6, "wifi: drop %#x fc %02x%02x flag %08x len %u", reason, h[0], h[1], flag, s->len);
       lx_log(6, "wifi: drop a1 %02x:%02x:%02x:%02x:%02x:%02x a2 %02x:%02x:%02x:%02x:%02x:%02x", h[4], h[5], h[6], h[7], h[8], h[9], h[10],
              h[11], h[12], h[13], h[14], h[15]);
+      /* the IV after a 24-byte (non-QoS) or 26-byte (QoS) header: CCMP's key id is bits 7:6 of its fourth byte */
+      if (s->len >= 34) {
+        const unsigned hl = (h[0] & 0x80) ? 26 : 24; const u8 *iv = h + hl;
+        lx_log(6, "wifi: drop iv %02x %02x %02x %02x %02x %02x %02x %02x keyid %u", iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7],
+               iv[3] >> 6);
+      }
     }
   }
   kfree_skb(s);
