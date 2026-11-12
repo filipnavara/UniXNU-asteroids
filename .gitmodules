@@ -1,23 +1,23 @@
 [submodule "drivers/ShengUfs"]
 	path = drivers/ShengUfs
-	url = https://github.com/rootstockos/NativeUfs.git
+	url = https://github.com/filipnavara/NativeUfs.git
 	branch = asteroids
 [submodule "kits/AdrenoFirmware"]
 	path = kits/AdrenoFirmware
-	url = https://github.com/rootstockos/AdrenoFirmware.git
+	url = https://github.com/filipnavara/AdrenoFirmware.git
 	branch = asteroids
 [submodule "drivers/Adreno740"]
 	path = drivers/Adreno740
-	url = https://github.com/rootstockos/NativeAdreno.git
+	url = https://github.com/filipnavara/NativeAdreno.git
 	branch = asteroids
 [submodule "drivers/ShengHidInput"]
 	path = drivers/ShengHidInput
 	url = https://github.com/UniXNU/ShengHidInput.git
 [submodule "drivers/ArmDTPlatform"]
 	path = drivers/ArmDTPlatform
-	url = https://github.com/rootstockos/ArmDTPlatform.git
+	url = https://github.com/filipnavara/ArmDTPlatform.git
 	branch = asteroids
 [submodule "drivers/GopFramebuffer"]
 	path = drivers/GopFramebuffer
-	url = https://github.com/rootstockos/GopFramebuffer.git
+	url = https://github.com/filipnavara/GopFramebuffer.git
 	branch = asteroids

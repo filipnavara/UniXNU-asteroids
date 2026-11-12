@@ -137,42 +137,18 @@ native_virtio_input_probe (void)
 #define BOARD_STANDIN __attribute__((weak))
 #endif
 #endif
-/*
- * iOS 27 (scripts/build-native-legacy-display-27.py with UniXNU's GopFramebuffer): the display asks the GPU driver for its
- * fences under upstream's names, native_adreno_fences and native_adreno_fences_detail. This board's NativeAdreno fork
- * answers them as native_gpu_fences (GpuPowerProbe.cpp), so both forward there. The arm64e kernel link resolves no weak
- * import that nothing defines, hence definitions rather than absent symbols.
- */
-extern bool native_gpu_fences (uint32_t *submitted, uint32_t *completed);
+/* native_adreno_fences, native_adreno_fences_detail and the GPU trace (native_gpu_trace_*) come from Adreno740 itself since
+ * the 2026-11-12 upstream sync (NativeAdrenoPublish.cpp); the board's stand-ins for them are gone. */
 
-BOARD_STANDIN bool
-native_adreno_fences (uint32_t *submitted, uint32_t *retired)
-{
-  return native_gpu_fences (submitted, retired);
-}
-
-BOARD_STANDIN bool
-native_adreno_fences_detail (uint32_t *submitted, uint32_t *retired, uint32_t *detail)
-{
-  if (detail)
-    detail[0] = detail[1] = detail[2] = 0;
-  return native_gpu_fences (submitted, retired);
-}
-
-/* The fork keeps no GPU trace (upstream Adreno740's NativeGpuTrace.inc): off. */
+/* Upstream Adreno740's pool views (NativeAdrenoPublish.cpp) ask the kernel to report a device pager's close; only UniXNU's macOS
+ * kernel has the hook (gpupool-device-pager-close.patch). The board registers no such pool, so no view is made: refuse. */
 BOARD_STANDIN int
-native_gpu_trace_enabled (void)
+iokit_physical_descriptor_close_notify (void *descriptor, void (*closed)(void *), void *context)
 {
-  return 0;
-}
-
-BOARD_STANDIN void
-native_gpu_trace_record (uint32_t event, uint32_t pid, const uint64_t *values, uint32_t count)
-{
-  (void)event;
-  (void)pid;
-  (void)values;
-  (void)count;
+  (void)descriptor;
+  (void)closed;
+  (void)context;
+  return 5; /* KERN_FAILURE: the view is not tracked */
 }
 
 /* iPadOS 17's boot progress kit (BootFaultProbe.c) records the caller stack; iOS 27 has no such kit: no frames. */

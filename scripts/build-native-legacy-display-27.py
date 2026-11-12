@@ -561,7 +561,7 @@ gmu_sources = [adreno / (n + '.cpp') for n in ('NativeAdrenoMemory', 'NativeAdre
                                                'NativeAdrenoSmmuContext', 'NativeAdrenoGmuContext', 'NativeAdrenoCpu', 'NativeAdrenoSha256',
                                                'NativeAdrenoGpuContext', 'NativeAdrenoRing', 'NativeAdrenoCpInit', 'NativeAdrenoPwrup',
                                                'NativeAdrenoSubmit', 'NativeAdrenoTimer', 'NativeAdrenoProfile', 'NativeAdrenoUserClient',
-                                               'NativeAdrenoPublish')]
+                                               'NativeAdrenoPublish', 'NativeAdrenoPool', 'NativeAdrenoPreempt')]
 for src in gmu_sources:
     compile_cpp(src, board_dir / (src.stem + '.o'), adreno_flags)
     board_objects.append(board_dir / (src.stem + '.o'))
