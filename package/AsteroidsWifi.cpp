@@ -575,9 +575,14 @@ void msiIrq(void *context) {
     native_wlan_stats[3] = native_wlan_stats[3] | (int32_t)(1u << vector);
     wakeWorker();
 }
-int attachIrqs() {
+// Attaches the vectors the module has handlers for (ath11k on the WCN6750: copy engines 0-6, data groups 10-12, 14, 16-20; 16 of 32,
+// which fit ArmCpu's 24 SPI slots next to the board's other drivers). Until all are attached the module keeps polling.
+uint32_t gIrqMask;
+int attachIrqs(uint32_t mask) {
     if (!armcpu_spi_attach) return -78;
+    if (!mask) return -2;
     for (uint32_t v = 0; v < kMsiCount; ++v) {
+        if (!(mask & (1u << v)) || (gIrqMask & (1u << v))) continue;
         int rc = 0;
         for (unsigned tries = 0;; ++tries) {
             rc = armcpu_spi_attach(32 + kMsiSpi + v, true, msiIrq, reinterpret_cast<void *>(uintptr_t(v)), nullptr, nullptr);
@@ -585,6 +590,7 @@ int attachIrqs() {
             IOSleep(250);
         }
         if (rc) return rc;
+        gIrqMask |= 1u << v;
     }
     gIrqs = true;
     return 0;
@@ -1222,12 +1228,6 @@ void wifiThread(void *, wait_result_t) {
         const int rails = voteVrms(kVrms, sizeof kVrms / sizeof kVrms[0]), pa = enablePaSupply();
         native_wlan_stats[1] = rails | (pa ? 0x100 : 0);
     }
-    // ArmCpu keeps 24 SPI handlers for every driver, fewer than the chip's 32 vectors: the module polls its interrupt lines every
-    // millisecond unless wifi-irq=1 attaches them all (and falls back to polling when they do not fit).
-    unsigned wantIrqs = 0;
-    PE_parse_boot_argn("wifi-irq", &wantIrqs, sizeof wantIrqs);
-    const int irqs = wantIrqs ? attachIrqs() : -1;
-    if (irqs) logf(6, "wifi: interrupts %s (%d): polling", wantIrqs ? "not attached" : "not asked for", irqs);
     stage(StIrqs);
 
     static const struct lx_platform plat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync, pFwGet,
@@ -1298,6 +1298,16 @@ void wifiThread(void *, wait_result_t) {
     native_wlan_stats[14] = r;
     if (r) {fail(StStarted, r); return;}
     stage(StStarted);
+    // wifi-irq=1: attach the vectors the module asked for (nw_wifi_irq_vectors) as GIC SPIs, otherwise the module polls its interrupt
+    // lines every millisecond. wifi-irq-poll=MS: with interrupts, still give every handler a turn every MS ms (default 20; 0 never).
+    unsigned wantIrqs = 0, irqPoll = 20;
+    PE_parse_boot_argn("wifi-irq", &wantIrqs, sizeof wantIrqs);
+    PE_parse_boot_argn("wifi-irq-poll", &irqPoll, sizeof irqPoll);
+    const uint32_t irqVectors = nw_wifi_irq_vectors();
+    const int irqs = wantIrqs ? attachIrqs(irqVectors) : -1;
+    if (irqs) logf(6, "wifi: interrupts %s (%d, vectors %x, attached %x): polling", wantIrqs ? "not attached" : "not asked for", irqs, irqVectors, gIrqMask);
+    else logf(6, "wifi: interrupts on: vectors %x, backstop poll %u ms", gIrqMask, irqPoll);
+    nw_wifi_irq_backstop(irqPoll);
     nw_wifi_irq_mode(gIrqs);
 
     unsigned selfScan = 1, autoJoin = 0;
@@ -1311,9 +1321,16 @@ void wifiThread(void *, wait_result_t) {
     uint64_t radioAt = 0;
     uint64_t fwdAt = 0;
     bool fwdEarly = false;
-    uint64_t nextFaults = 0;
+    uint64_t nextFaults = 0, nextLoad = pNow() + 30000, loadRounds = 0;
+    int32_t loadIrqs = native_wlan_stats[2];
     for (uint64_t n = 0;; ++n) {
         if (pNow() >= nextFaults) {nextFaults = pNow() + 500; faultReport();}
+        if (pNow() >= nextLoad) {   // worker rounds and interrupts per second over the last 30 s (polling: about 1000 rounds)
+            const int32_t irqsNow = native_wlan_stats[2];
+            logf(6, "wifi: load %llu rounds/s, %d interrupts/s (vectors seen %x)", (n - loadRounds) / 30, (irqsNow - loadIrqs) / 30,
+                 (uint32_t)native_wlan_stats[3]);
+            loadRounds = n; loadIrqs = irqsNow; nextLoad = pNow() + 30000;
+        }
         applyCpr();
         const int busy = nw_wifi_step();
         if (!powered && nw_wifi_stats.stage >= 4) {

@@ -127,6 +127,10 @@ int nw_wifi_step(void);                                                   /* non
 /* Board poll delivers observed MSI bits from the worker, including nested waits. */
 void nw_wifi_irq_mode(int delivered);
 void nw_wifi_irq_pending(uint32_t vectors);
+/* The MSI vectors the module has handlers for (bit n: irq_base + n), known once nw_wifi_start returned: the board attaches only these. */
+uint32_t nw_wifi_irq_vectors(void);
+/* With delivered interrupts, still give every handler a turn each MS milliseconds (0: never). */
+void nw_wifi_irq_backstop(unsigned ms);
 void nw_wifi_poll(void);                    /* worker poll, including nested firmware waits */
 unsigned nw_wifi_wait_ms(unsigned maximum);
 void nw_wifi_stop(void);

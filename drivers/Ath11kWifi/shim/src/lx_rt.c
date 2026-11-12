@@ -30,6 +30,10 @@ static u32 g_seed = 0x2545f491u;
 static int g_depth;
 int lx_dispatching(void) { return g_depth != 0; }
 static int g_irq_polling = 1;
+/* With delivered interrupts, every handler still gets a turn each lx_irq_backstop_ms (0: never), a backstop for an edge the module
+ * consumed while its own enable flag was off (Linux masks and replays it; this runtime does not). */
+unsigned lx_irq_backstop_ms;
+static u64 g_last_raise;
 static unsigned g_rcu_readers;
 static int g_rcu_lock, g_rcu_draining;
 static struct rcu_head *g_rcu_head, *g_rcu_tail;
@@ -368,6 +372,11 @@ void lx_disable_irq(unsigned int irq) { for (int i = 0; i < 64; i++) if (g_irq[i
 void lx_enable_irq(unsigned int irq) { for (int i = 0; i < 64; i++) if (g_irq[i].used && g_irq[i].strict && g_irq[i].irq == irq && g_irq[i].disabled) g_irq[i].disabled--; }
 void lx_irq_raise(unsigned int irq) { for (int i = 0; i < 64; i++) if (g_irq[i].used && g_irq[i].irq == irq) g_irq[i].pending = 1; }
 void lx_irq_polling(int enabled) { g_irq_polling = enabled != 0; }
+/* The vectors (irq numbers base..base+count-1, count <= 32) that have a handler. */
+unsigned int lx_irq_mask(unsigned base, unsigned count) {
+  unsigned int mask = 0;
+  for (int i = 0; i < 64; i++) if (g_irq[i].used && g_irq[i].irq >= base && g_irq[i].irq - base < count) mask |= 1u << (g_irq[i].irq - base);
+  return mask; }
 
 unsigned lx_next_wait_ms(unsigned maximum) {
   u64 now = lx_now_ms();
@@ -390,6 +399,11 @@ unsigned lx_next_wait_ms(unsigned maximum) {
     u64 wait = delta / 1000000ULL + (delta % 1000000ULL != 0);
     if (wait < maximum) maximum = (unsigned)wait;
   }
+  if (!g_irq_polling && lx_irq_backstop_ms) {
+    const u64 due = g_last_raise + lx_irq_backstop_ms;
+    if (due <= now) return 0;
+    if (due - now < maximum) maximum = (unsigned)(due - now);
+  }
   return g_irq_polling && maximum > 1 ? 1 : maximum;
 }
 
@@ -408,7 +422,8 @@ int lx_pump(void) {
   where(4, (const void *)lx_plat->poll);
   lx_plat->poll();
   /* Poll only until the board attaches real MSI delivery, or after its fallback. */
-  { static u64 last_raise; u64 t = lx_now_ms(); if (g_irq_polling && t != last_raise) { last_raise = t; lx_irq_raise_all(); } }
+  { const u64 t = lx_now_ms();
+    if (g_irq_polling ? t != g_last_raise : lx_irq_backstop_ms && t - g_last_raise >= lx_irq_backstop_ms) { g_last_raise = t; lx_irq_raise_all(); } }
   for (int i = 0; i < 64; i++) if (g_irq[i].used && g_irq[i].pending && !g_irq[i].disabled && !is_running(&g_irq[i])) {
     g_irq[i].pending = 0; ran = 1;
     where(1, (const void *)g_irq[i].h);

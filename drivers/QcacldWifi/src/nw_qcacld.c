@@ -87,6 +87,8 @@ void nw_wifi_stop(void) {
 
 void nw_wifi_poll(void) { lx_enter(); nw_mainline_poll(); nw_wifi_control_poll(); lx_leave(); }
 void nw_wifi_irq_mode(int delivered) { lx_irq_polling(!delivered); }
+uint32_t nw_wifi_irq_vectors(void) { lx_enter(); const uint32_t m = nw_board ? lx_irq_mask(nw_board->irq_base, 32) : 0; lx_leave(); return m; }
+void nw_wifi_irq_backstop(unsigned ms) { lx_irq_backstop_ms = ms; }
 void nw_wifi_irq_pending(uint32_t vectors) {
   if (!nw_board) return;
   lx_enter();

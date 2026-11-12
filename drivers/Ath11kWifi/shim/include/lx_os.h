@@ -140,6 +140,8 @@ typedef struct { int unused; } wait_queue_head_t;
 extern void (*lx_log_tap)(int level, const char *line);   /* sees every line after it is logged */
 int lx_pump(void);               /* runs one round of ready work; returns nonzero if anything ran */
 void lx_irq_polling(int enabled);
+unsigned int lx_irq_mask(unsigned base, unsigned count);
+extern unsigned lx_irq_backstop_ms;
 unsigned lx_next_wait_ms(unsigned maximum);
 int net_ratelimit(void);
 void lx_idle(unsigned int ms);   /* nothing ready: let the clock advance and device events arrive */
