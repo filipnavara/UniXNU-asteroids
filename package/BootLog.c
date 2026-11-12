@@ -81,6 +81,7 @@ extern volatile uint64_t native_gop_wait_stats[7] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall_mem[59] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_stall_fault[32] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_pending[8] __attribute__((weak_import));
 extern volatile uint32_t native_legacy_timeline[3][10] __attribute__((weak_import));
@@ -1504,6 +1505,17 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       snprintf(row, sizeof row, "[gpu stall] handles job>=%u br=%u bv=%u bv2=%u", native_adreno_stall_mem[55], native_adreno_stall_mem[56],
                native_adreno_stall_mem[57], native_adreno_stall_mem[58]);
       at = put(out, at, cap, row, sizeof row);
+    }
+    // Where the stalled job's IBs hold the faulting address (NativeAdrenoSubmit findFault, searched only for a fault whose upper word is
+    // 0): matches, matches followed by a 0 word, level, IB lo/hi, offset, then the words around; then the nearest base below within 1 MiB
+    // followed by a 0 word, its distance, level, IB lo/hi, offset and words; then IBs and dwords read.
+    if (&native_adreno_stall_fault && (native_adreno_stall_fault[30] || native_adreno_stall_fault[0])) {
+      for (unsigned part = 0; part < 2; ++part) {
+        int n = snprintf(row, sizeof row, "[gpu fault%s]", part ? " base" : "");
+        const unsigned first = part ? 16 : 0, count = 16;
+        for (unsigned k = first; k < first + count && n > 0 && (size_t)n < sizeof row; ++k) n += snprintf(row + n, sizeof row - n, " %x", native_adreno_stall_fault[k]);
+        at = put(out, at, cap, row, sizeof row);
+      }
     }
   }
   if (&native_gop_wait_stats && native_gop_wait_stats[0]) {
