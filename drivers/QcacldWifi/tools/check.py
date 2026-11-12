@@ -4,7 +4,7 @@ tools/objlist.sh) against the QcacldWifi shim (shim/include) and the Ath11kWifi 
 deps: headers no include path provides; compile: syntax errors grouped by kind and name; objs: objects into out/objs/.
 tools/check.py <vendor wlan dir> board <out dir> <target triple>: the module's objects for the board build (-O2, the kernel's
 target), printed as "OBJ <path>"; nonzero exit on any compile error."""
-import collections, json, re, subprocess, sys
+import collections, json, os, re, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -18,7 +18,7 @@ W = wlan / 'qcacld-3.0'
 A = here.parent / 'Ath11kWifi'
 clang = subprocess.run(['xcrun', '-f', 'clang'], check=True, capture_output=True, text=True).stdout.strip()
 resource = subprocess.run([clang, '-print-resource-dir'], check=True, capture_output=True, text=True).stdout.strip() + '/include'
-base = ['-target', target, '-mkernel', *(['-O2', '-g0', '-fno-delete-null-pointer-checks', '-momit-leaf-frame-pointer'] if mode == 'board' else ['-O1']), '-ffreestanding', '-fno-builtin', '-fno-common', '-fno-strict-aliasing',
+base = ['-target', target, '-mkernel', *([os.environ.get('QCACLD_OPT', '-O2'), '-g0', '-fno-delete-null-pointer-checks', '-momit-leaf-frame-pointer'] if mode == 'board' else ['-O1']), '-ffreestanding', '-fno-builtin', '-fno-common', '-fno-strict-aliasing',
         '-fwrapv', '-fno-stack-protector', '-mgeneral-regs-only', '-std=gnu11', '-w',
         '-D__linux__', '-DLINUX', '-D__KERNEL__', '-DMODULE', '-DKBUILD_MODNAME="qca_cld3_qca6750"', '-nostdinc', '-isystem', str(A / 'shim/libc'), '-isystem', resource,
         '-include', 'qcacld_prelude.h', '-include', 'lx_pci.h', '-include', 'qcacld_kernel.h', '-include', 'qcacld_net.h',

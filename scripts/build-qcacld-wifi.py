@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile the qcacld WiFi module (drivers/QcacldWifi: qcacld-3.0 on the icnss backend) to kernel objects for the board build.
 Usage: build-qcacld-wifi.py <QcacldWifi dir> <output dir>
-Prints one line "OBJ <path>" per object, like build-ath11k-wifi.py, so the board build links either module.
+Prints "OBJ <path>" for one partially linked object (its strings and constants moved to __DATA_CONST), as build-ath11k-wifi.py prints its objects.
 - The runtime (lx_rt, cfg80211, QMI, QRTR, the station/control path, hostap crypto) comes from the Ath11kWifi module, compiled by
   build-ath11k-wifi.py in its runtime-only mode (no ath11k, mac80211 or their glue).
 - qcacld: the vendor wlan tree (QCACLD_VENDOR_WLAN, default <workspace>/ref/nothing-kernel/vendor/qcom/opensource/wlan) is copied and
@@ -76,10 +76,16 @@ for kind, o in raw:
     shutil.copyfile(o, dest)
     subprocess.run([str(llvm / 'llvm-objcopy'), f'--redefine-syms={mapping}', str(dest)], check=True)
     result.append(dest)
+# The kernelcache keeps the kernel's __TEXT (header, __const, __cstring) in a fixed hole of Apple's __PRELINK_TEXT, too small for
+# qcacld's strings and constants: one partial link moves them to __DATA_CONST, which the prelinker places on its own (still
+# read-only, still readable for the logs).
+linked = out / 'qcacld-wifi.o'
+arch = TRIPLE.split('-', 1)[0]
+subprocess.run(['xcrun', 'ld', '-r', '-arch', arch, '-rename_section', '__TEXT', '__cstring', '__DATA_CONST', '__cstring',
+                '-rename_section', '__TEXT', '__const', '__DATA_CONST', '__const', *map(str, result), '-o', str(linked)], check=True)
 (out / 'build-report.json').write_text(json.dumps({
     'runtime': 'mainline', 'driver': 'qcacld-3.0 (qca6750, icnss backend)', 'hardware_verified': False,
     'vendor': str(vendor), 'ini_sha256': hashlib.sha256(data).hexdigest(), 'patch_sha256': hashlib.sha256((module / 'patches/qcacld-port.patch').read_bytes()).hexdigest(),
-    'objects': [str(o) for o in result],
+    'objects': [str(o) for o in result], 'linked': str(linked),
 }, indent=2) + '\n')
-for o in result:
-    print(f'OBJ {o}')
+print(f'OBJ {linked}')
