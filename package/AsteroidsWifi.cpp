@@ -1273,6 +1273,7 @@ void wifiThread(void *, wait_result_t) {
             if (selfScan == 2) {nw_wifi_scan_mask = 1; scanStage = 1;}
             nw_wifi_rx_buf_probe(0);  // which receive buffers the chip writes from here on
             nw_wifi_reg_check("before the scan");
+            if (nw_wifi_dp_vendor & 16) nw_wifi_vendor_regs("before the scan");
             nw_wifi_idle_check("before the scan");
             scanStartedAt = pNow();
             // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
@@ -1288,6 +1289,8 @@ void wifiThread(void *, wait_result_t) {
         static bool snap0, snap1;
         static int regFrom[2] = {-1, -1};
         static uint64_t regLogAt;
+        static bool vendorRegs;  // wifi-dp-vendor bit 16: the vendor's idle WBM/REO state, 3 s after radio on and before the scan
+        if ((nw_wifi_dp_vendor & 16) && powered && !vendorRegs && scanAt && pNow() + 17000 >= scanAt) {vendorRegs = true; nw_wifi_vendor_regs("after radio on");}
         if (regDump && powered && radioAt && !snap0 && pNow() >= radioAt + 5000) {snap0 = true; nw_wifi_reg_snapshot(0); regFrom[0] = 0;}
         if (regDump && scanAsked && !snap1 && pNow() >= scanStartedAt + 300) {snap1 = true; nw_wifi_reg_snapshot(1); regFrom[1] = 0;}
         if (regDump && pNow() >= regLogAt) {

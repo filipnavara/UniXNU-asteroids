@@ -134,6 +134,30 @@ void nw_wifi_reg_check(const char *when) {
            ath11k_hif_read32(ab, s->hwreg_base[HAL_SRNG_REG_GRP_R2] + 4), reg, ath11k_hif_read32(ab, reg), (u32)s->ring_base_paddr);
   }
 }
+/* The data-path registers as the vendor stack leaves them (register diff 2026-11-12, logs/regdiff-idle.txt: vendor icnss2 + qcacld,
+ * idle with wlan0 up, against ours before the scan): WBM does not feed RXDMA0 link descriptors (LINK_DESC_RING_ENABLE 0x03, ours 0x13
+ * with WBM2RXDMA0_LINK_RING_ENABLE), the idle link ring has RING_ID_DISABLE, REO has no RXDMA2REO ring and BAR destination 0, every REO
+ * destination indication and the fragment destination go to the firmware (6). ath11k writes none of the enables (the firmware does);
+ * this writes the vendor's values and logs them before and after (worker only). */
+void nw_wifi_vendor_regs(const char *when) {
+  if (!g_hw) return;
+  struct ath11k *ar = g_hw->priv; struct ath11k_base *ab = ar->ab;
+  const u32 wbm = 0xa34000, reo = 0xa38000;
+  u32 link = ath11k_hif_read32(ab, wbm + 0xc), misc = ath11k_hif_read32(ab, wbm + 0x884), gen = ath11k_hif_read32(ab, reo + 0x0),
+      ix0 = ath11k_hif_read32(ab, reo + 0x4), ix2 = ath11k_hif_read32(ab, reo + 0xc), mctl = ath11k_hif_read32(ab, reo + 0x5d8);
+  lx_log(6, "vendor regs %s before: link %x idle misc %x reo gen %x ix0 %x ix2 %x misc %x", when, link, misc, gen, ix0, ix2, mctl);
+  ath11k_hif_write32(ab, wbm + 0xc, link & ~0x10u);
+  ath11k_hif_write32(ab, wbm + 0x884, misc | 1u);
+  ath11k_hif_write32(ab, reo + 0x0, gen & ~0xef0u);
+  ath11k_hif_write32(ab, reo + 0x4, 0x66666666u);
+  ath11k_hif_write32(ab, reo + 0x8, 0x66666666u);
+  ath11k_hif_write32(ab, reo + 0xc, 0x66666666u);
+  ath11k_hif_write32(ab, reo + 0x10, 0x66666666u);
+  ath11k_hif_write32(ab, reo + 0x5d8, (mctl & ~0x1e0000u) | 6u << 17);
+  lx_log(6, "vendor regs %s after: link %x idle misc %x reo gen %x ix0 %x ix2 %x misc %x", when, ath11k_hif_read32(ab, wbm + 0xc),
+         ath11k_hif_read32(ab, wbm + 0x884), ath11k_hif_read32(ab, reo + 0x0), ath11k_hif_read32(ab, reo + 0x4),
+         ath11k_hif_read32(ab, reo + 0xc), ath11k_hif_read32(ab, reo + 0x5d8));
+}
 /* The WCN6750 data-path registers (scripts/gen-wcn-reglist.py, nw_wcn_regs.h) for the register-state diff against the vendor stack
  * (tools/nwregdump, scripts/diff-wcn-regs.py), read through ath11k_hif_read32 (the static windows) as one snapshot per slot (worker
  * only); nw_wifi_reg_log logs a slot's values from an index, 8 a line, and returns where the next call continues (0 when done). */

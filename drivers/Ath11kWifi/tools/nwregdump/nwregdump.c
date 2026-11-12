@@ -28,6 +28,24 @@ extern volatile unsigned long jiffies;
 #include "../../src/nw_wcn_regs.h"
 
 #define BAR 0x61e00000ul
+/* NW_BLOCK picks the block a build dumps (one per module, so a hang points at a block): 0 WBM, 1 REO, 2 TCL, 3 copy engines,
+ * -1 all. Registers outside it print as xxxxxxxx. */
+#ifndef NW_BLOCK
+#define NW_BLOCK -1
+#endif
+#ifndef NW_NAME
+#define NW_NAME "nwregdump"
+#endif
+static int in_block(u32 off)
+{
+	switch (NW_BLOCK) {
+	case 0: return off >= 0xa34000 && off < 0xa38000;
+	case 1: return off >= 0xa38000 && off < 0xa3c000;
+	case 2: return off >= 0xa44000 && off < 0xa48000;
+	case 3: return off >= 0x1b80000;
+	default: return 1;
+	}
+}
 #define WINDOW 0x80000u
 
 static u32 read_reg(volatile unsigned char *win, u32 off)
@@ -62,19 +80,31 @@ __attribute__((section(".init.text"), used)) int init_module(void)
 	i = icnss_force_wake_request(dev);
 	for (int t = 0; t < 50 && !(awake = icnss_is_device_awake(dev)); t++)
 		msleep(2);
-	_printk("\0016nwreg: begin %lu: wake request %d, awake %d, %d registers\n", stamp, i, awake, NW_WCN_REGS);
+	_printk("\0016nwreg: begin %lu: block %d, wake request %d, awake %d, %d registers\n", stamp, NW_BLOCK, i, awake, NW_WCN_REGS);
 	if (awake) {
 		win = devm_ioremap(dev, BAR + WINDOW, 2 * WINDOW);
 		if (!win) {
 			_printk("\0013nwreg: no mapping\n");
 		} else {
 			for (i = 0; i < NW_WCN_REGS; i += 8) {
-				int n = NW_WCN_REGS - i < 8 ? NW_WCN_REGS - i : 8;
+				int n = NW_WCN_REGS - i < 8 ? NW_WCN_REGS - i : 8, any = 0;
+				char text[8][9];
 
-				for (int k = 0; k < 8; k++)
-					vals[k] = k < n ? read_reg(win, nw_wcn_regs[i + k]) : 0;
-				_printk("\0016nwreg %lu %d: %08x %08x %08x %08x %08x %08x %08x %08x\n", stamp, i, vals[0], vals[1], vals[2],
-					vals[3], vals[4], vals[5], vals[6], vals[7]);
+				for (int k = 0; k < 8; k++) {
+					if (k < n && in_block(nw_wcn_regs[i + k])) {
+						vals[k] = read_reg(win, nw_wcn_regs[i + k]);
+						for (int d = 0; d < 8; d++)
+							text[k][d] = "0123456789abcdef"[(vals[k] >> (28 - 4 * d)) & 15];
+						any = 1;
+					} else {
+						for (int d = 0; d < 8; d++)
+							text[k][d] = 'x';
+					}
+					text[k][8] = 0;
+				}
+				if (any)
+					_printk("\0016nwreg %lu %d: %s %s %s %s %s %s %s %s\n", stamp, i, text[0], text[1], text[2], text[3],
+						text[4], text[5], text[6], text[7]);
 			}
 		}
 	}
@@ -99,12 +129,12 @@ struct this_module_layout {
 	char pad2[0x440 - 0x170 - 8];
 };
 __attribute__((section(".gnu.linkonce.this_module"), aligned(64), used))
-struct this_module_layout __this_module = {.name = "nwregdump", .init = init_module};
+struct this_module_layout __this_module = {.name = NW_NAME, .init = init_module};
 
 __attribute__((section(".modinfo"), used, aligned(1))) static const char modinfo[] =
 	"license=GPL\0"
 	"vermagic=6.1.172-android14-11-maybe-dirty SMP preempt mod_unload modversions aarch64\0"
-	"name=nwregdump\0"
+	"name=" NW_NAME "\0"
 	"depends=icnss2\0";
 
 struct modversion { u64 crc; char name[56]; };

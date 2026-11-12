@@ -5,7 +5,8 @@
     diff-wcn-regs.py OUR_LOGDIR VENDOR_DMESG [--ours-slot 0|1] [--vendor-dump N] [--all]
 
 Ours: "[wlan-log] .. nwreg sSLOT IDX: v0..v7" lines (slot 0 idle after radio on, slot 1 0.3 s into the first scan). Vendor:
-"nwreg STAMP IDX: v0..v7" lines, one dump per module load (--vendor-dump picks one, default the first). Registers that hold addresses or
+"nwreg STAMP IDX: v0..v7" lines, one dump per module load (--vendor-dump picks one, default the first; --vendor-dump=merge
+merges every dump, later loads winning, for per-block builds whose other registers print as xxxxxxxx). Registers that hold addresses or
 ring pointers (BASE_LSB/MSB, MSI addresses, HP/TP) differ between hosts by nature; they are listed apart from the configuration.
 """
 import re
@@ -23,7 +24,7 @@ for line in (Path(__file__).resolve().parent.parent / "drivers/Ath11kWifi/tools/
 
 def fill(table, idx, vals):
     for k, v in enumerate(vals):
-        if idx + k < len(names):
+        if idx + k < len(names) and "x" not in v:
             table[idx + k] = int(v, 16)
 
 
@@ -35,7 +36,7 @@ for path in sorted(ours_dir.rglob("slots.txt")):
         if m and m[1] == slot:
             fill(ours, int(m[2]), m[3].split())
 dumps = {}
-pat = re.compile(r"nwreg (\d+) (\d+): ((?:[0-9a-f]{8} ?){8})")
+pat = re.compile(r"nwreg (\d+) (\d+): ((?:[0-9a-fx]{8} ?){8})")
 for line in vendor_file.read_text(errors="replace").splitlines():
     m = pat.search(line)
     if m:
@@ -43,7 +44,13 @@ for line in vendor_file.read_text(errors="replace").splitlines():
 if not dumps:
     sys.exit("no vendor dump in " + str(vendor_file))
 stamps = list(dumps)
-vendor = dumps[stamps[int(opts.get("vendor-dump", "0"))]]
+if opts.get("vendor-dump") == "merge":
+    vendor = {}
+    for stamp in stamps:
+        vendor.update(dumps[stamp])
+    opts["vendor-dump"] = "0"
+else:
+    vendor = dumps[stamps[int(opts.get("vendor-dump", "0"))]]
 print(f"ours: slot {slot}, {len(ours)} of {len(names)} registers; vendor: dump {stamps.index(stamps[int(opts.get('vendor-dump', '0'))])} "
       f"of {len(stamps)}, {len(vendor)} registers")
 addr = re.compile(r"BASE_LSB|BASE_MSB|MSI1_BASE|_ADDR|_HP$|_TP$|\+040|\+400|\+404|\+000|\+004")

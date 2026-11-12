@@ -52,6 +52,7 @@ void nw_wifi_rx_state(char *text, int size);
 void nw_fw_diag_dump(unsigned skip, unsigned count);  /* logs the firmware's last diag records (see src/nw_debug.c) */
 void nw_wifi_reg_check(const char *when);  /* reads the host-programmed ring registers back and logs the ones that differ */
 void nw_wifi_idle_check(const char *when);  /* the WBM idle list: link descriptors listed twice or outside the banks */
+void nw_wifi_vendor_regs(const char *when);  /* writes the vendor stack's idle WBM/REO enables and routing */
 void nw_wifi_reg_snapshot(int slot);  /* the data-path registers (nw_wcn_regs.h) into snapshot slot 0/1 */
 int nw_wifi_reg_log(int slot, int from, int lines);  /* logs a snapshot from an index, returns the next (0 done) */
 int nw_wifi_fw_log_verbose(void);  /* asks the firmware for its WAL, WHAL, RX and DATA_TXRX modules' verbose log */
