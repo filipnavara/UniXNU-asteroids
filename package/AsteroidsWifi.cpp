@@ -926,6 +926,41 @@ extern "C" int asteroids_wifi_join_read(uint8_t **data, size_t *size);
 volatile int gConnectDone = -1;
 void connectDone(int result) {gConnectDone = result; wakeWorker();}
 struct Join {char ssid[33]; char key[65]; size_t ssidLen, keyLen; bool loaded, gaveUp; unsigned rounds; uint64_t next;} gJoin;
+// wifi-dhcp-probe=1: once the station is up, the board sends a DHCP Discover itself (broadcast, from the station's address) through the
+// module, three times 3 s apart. The server's Offer comes back through the receive path to en0, where WifiNet logs DHCP frames ("wifi-net:
+// dhcp in type 2 ... yiaddr"): transmit and receive of real IP traffic without the system's DHCP client (which needs SpringBoard's join).
+struct DhcpProbe {unsigned sent; uint64_t next;} gDhcp;
+void dhcpProbe() {
+    unsigned want = 0;
+    PE_parse_boot_argn("wifi-dhcp-probe", &want, sizeof want);
+    if (!want || gDhcp.sent >= 3 || pNow() < gDhcp.next) return;
+    struct nw_wifi_status st;
+    nw_wifi_status_get(&st);
+    if (st.state != NW_STA_UP) return;
+    uint8_t f[14 + 20 + 8 + 300] = {};
+    uint8_t *e = f, *ip = f + 14, *udp = ip + 20, *b = udp + 8;
+    memset(e, 0xff, 6); memcpy(e + 6, st.mac, 6); e[12] = 0x08; e[13] = 0x00;
+    const uint32_t xid = 0x75580000u | gDhcp.sent;
+    b[0] = 1; b[1] = 1; b[2] = 6;                                            // BOOTREQUEST, Ethernet, 6-byte address
+    b[4] = xid >> 24; b[5] = xid >> 16; b[6] = xid >> 8; b[7] = xid;
+    b[10] = 0x80;                                                            // broadcast reply
+    memcpy(b + 28, st.mac, 6);                                               // chaddr
+    b[236] = 0x63; b[237] = 0x82; b[238] = 0x53; b[239] = 0x63;              // magic cookie
+    const uint8_t opts[] = {53, 1, 1, 61, 7, 1, st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4], st.mac[5], 55, 3, 1, 3, 6, 255};
+    memcpy(b + 240, opts, sizeof opts);
+    const uint16_t udpLen = 8 + 300, ipLen = 20 + udpLen;
+    udp[0] = 0; udp[1] = 68; udp[2] = 0; udp[3] = 67; udp[4] = udpLen >> 8; udp[5] = udpLen & 0xff;   // checksum 0: none
+    ip[0] = 0x45; ip[2] = ipLen >> 8; ip[3] = ipLen & 0xff; ip[8] = 64; ip[9] = 17;
+    memset(ip + 16, 0xff, 4);
+    uint32_t sum = 0;
+    for (int i = 0; i < 20; i += 2) sum += (uint32_t)ip[i] << 8 | ip[i + 1];
+    while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+    ip[10] = (uint8_t)(~sum >> 8); ip[11] = (uint8_t)~sum;
+    const int r = nw_wifi_tx(f, sizeof f);
+    logf(6, "wifi: dhcp probe %u: Discover xid %08x sent: %d", gDhcp.sent, xid, r);
+    ++gDhcp.sent; gDhcp.next = pNow() + 3000;
+    wakeWorker();
+}
 bool gNetStarted;
 void netStart() {
     struct nw_wifi_status status;
@@ -1454,6 +1489,7 @@ void wifiThread(void *, wait_result_t) {
             gConnectDone = -1;
         }
         if (autoJoin && powered && scanAsked && !gNetStarted) joinStep();   // with the network side, WifiNet joins (wifi-aj)
+        if (powered) dhcpProbe();
         if (!busy) {
             const unsigned wait = nw_wifi_wait_ms(gIrqs ? 1000 : 1);
             if (wait) waitWork(wait);

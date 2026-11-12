@@ -272,7 +272,9 @@ static inline void skb_postpull_rcsum(struct sk_buff *skb, const void *start, un
 #define dev_kfree_skb_any(s) kfree_skb(s)
 #define dev_kfree_skb_irq(s) kfree_skb(s)
 #define consume_skb(s) kfree_skb(s)
-#define kfree_skb_reason(s, r) kfree_skb(s)
+/* A frame dropped for a reason (SKB_DROP_REASON_*, mac80211's RX_DROP_* in its subsystem's range): counted and logged (src/nw_net.c). */
+void lx_kfree_skb_reason(struct sk_buff *s, unsigned reason);
+#define kfree_skb_reason(s, r) lx_kfree_skb_reason(s, (unsigned)(r))
 static inline u32 skb_headroom(const struct sk_buff *s) { return s->data - s->head; }
 static inline u32 skb_tailroom(const struct sk_buff *s) { return s->end - s->tail; }
 static inline void skb_set_tail_pointer(struct sk_buff *s, int offset) { s->tail = s->data + offset; }

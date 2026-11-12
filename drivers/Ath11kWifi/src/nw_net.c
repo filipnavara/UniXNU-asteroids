@@ -166,6 +166,20 @@ struct sk_buff *alloc_skb(unsigned int size, gfp_t f) {
   BUFFER_ADD(skb_allocations, 1); return s;
 }
 struct sk_buff *__dev_alloc_skb(unsigned int size, gfp_t f) { struct sk_buff *s = alloc_skb(size + 32, f); if (s) skb_reserve(s, 32); return s; }
+/* Why frames are dropped: the first time a reason is seen and then every 100th of it go to the log (the reason as the kernel's value:
+ * SKB_DROP_REASON_* below 0x10000, the subsystem in the upper 16 bits, e.g. mac80211's unusable RX_DROP_U_* reasons). */
+void lx_kfree_skb_reason(struct sk_buff *s, unsigned reason) {
+  static struct { unsigned reason, count; } seen[32];
+  if (s && reason > 2) {   /* 0 not specified, 1 not dropped (consumed), 2 not specified */
+    unsigned i = 0;
+    while (i < 32 && seen[i].count && seen[i].reason != reason) i++;
+    if (i < 32) {
+      if (!seen[i].count) seen[i].reason = reason;
+      if (seen[i].count++ % 100 == 0) lx_log(6, "wifi: frame dropped, reason %#x (%u so far), len %u", reason, seen[i].count, s->len);
+    }
+  }
+  kfree_skb(s);
+}
 void kfree_skb(struct sk_buff *s) {
   if (!s) return;
   if (__atomic_fetch_sub(&s->users, 1u, __ATOMIC_ACQ_REL) != 1) return;
