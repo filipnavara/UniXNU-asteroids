@@ -1215,8 +1215,18 @@ void wifiThread(void *, wait_result_t) {
                 const int ack = socWake(4);
                 // wifi-awake=2: when the first request goes unanswered, a release and a second request (an ack is a flip, so a lost first
                 // edge would show on the next one).
-                if (ack < 0 && awake >= 2) {socWake(5); socWake(4);}
+                if (ack < 0 && awake == 2) {socWake(5); socWake(4);}
                 logSmp2p("after");
+                // wifi-awake=3: then give both back at once, as icnss2/the vendor HIF do after each access (pld_allow_l1: EP power save
+                // enter; icnss_force_wake_release: SoC wake release), so the link to the chip may leave L0 and the firmware may sleep
+                // (IMPS): with both held the MAC never came back from IMPS (whal_wmac_transition_to_fw_control:1734, a power-up
+                // handshake bit that never set).
+                if (awake == 3) {
+                    const int32_t enter = asteroids_wpss_smp2p_send(2, 6);
+                    const int rel = socWake(5);
+                    logf(6, "wifi: ep power save enter %x, soc wake release %d", enter, rel);
+                    logSmp2p("released");
+                }
             }
             // wifi-fwlog=1: the firmware's receive and MAC modules log verbosely (see nw_wifi_fw_log_verbose).
             unsigned fwlog = 0;
