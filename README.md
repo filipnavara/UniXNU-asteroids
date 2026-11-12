@@ -17,11 +17,11 @@ UniXNU's:
 
 | Module | Repository | Use |
 |---|---|---|
-| `drivers/ShengUfs` | [filipnavara/NativeUfs](https://github.com/filipnavara/NativeUfs) (branch `asteroids-resync`) | UFS root in `userdata` |
-| `drivers/Adreno740` | [filipnavara/NativeAdreno](https://github.com/filipnavara/NativeAdreno) (branch `asteroids-sync-20261112`) | Adreno 810 (gen8): GMU, ring, submits and the user client |
-| `drivers/ArmDTPlatform` | [filipnavara/ArmDTPlatform](https://github.com/filipnavara/ArmDTPlatform) (branch `asteroids-resync`) | Platform expert; forwards the wall clock to the PMIC RTC (counter + offset on Data) |
+| `drivers/ShengUfs` | [filipnavara/NativeUfs](https://github.com/filipnavara/NativeUfs) (branch `asteroids`) | UFS root in `userdata` |
+| `drivers/Adreno740` | [filipnavara/NativeAdreno](https://github.com/filipnavara/NativeAdreno) (branch `asteroids`) | Adreno 810 (gen8): GMU, ring, submits and the user client |
+| `drivers/ArmDTPlatform` | [filipnavara/ArmDTPlatform](https://github.com/filipnavara/ArmDTPlatform) (branch `asteroids`) | Platform expert; forwards the wall clock to the PMIC RTC (counter + offset on Data) |
 | `drivers/ShengHidInput` | [UniXNU/ShengHidInput](https://github.com/UniXNU/ShengHidInput) | HID touch and buttons |
-| `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids-resync`) | GOP framebuffer and the GPU copy presenter |
+| `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids`) | GOP framebuffer and the GPU copy presenter |
 | `kits/AdrenoFirmware` | [filipnavara/AdrenoFirmware](https://github.com/filipnavara/AdrenoFirmware) (branch `asteroids`) | GMU/HFI kit with the A8xx performance table and votes |
 
 ## State (2026-11-12)
