@@ -486,7 +486,8 @@ old = '\tif (mac_id == 0 && nw_wifi_fse)\n\t\tnw_htt_fse_setup(ab);\n'
 assert s.count(old) == 1, "dp_rx.c fse call mark"
 s = s.replace(old, '\tif (mac_id == 0 && nw_wifi_fse && !(nw_wifi_dp_vendor & 4))\n\t\tnw_htt_fse_setup(ab);\n', 1)
 fn = 'int ath11k_dp_rx_pdev_alloc(struct ath11k_base *ab, int mac_id)\n'
-helper = """/* Ath11kWifi: the vendor's data path order and REO routing (see tools/prepare-ath11k.sh). */
+helper = """#include "hif.h"
+/* Ath11kWifi: the vendor's data path order and REO routing (see tools/prepare-ath11k.sh). */
 unsigned nw_wifi_dp_vendor;
 static void nw_reo_vendor(struct ath11k_base *ab)
 {
@@ -512,7 +513,7 @@ static void nw_reo_vendor(struct ath11k_base *ab)
 """
 assert s.count(fn) == 1
 s = s.replace(fn, helper + fn, 1)
-old = '\t\t\t\t    "failed to configure mon_status_refill_ring%d %d\\n",\n\t\t\t\t    i, ret);\n\t\t\treturn ret;\n\t\t}\n\t}\n\treturn 0;\n}\n'
+old = '\t\t\t\t    "failed to configure mon_status_refill_ring%d %d\\n",\n\t\t\t\t    i, ret);\n\t\t\treturn ret;\n\t\t}\n\t}\n\n\treturn 0;\n}\n'
 assert s.count(old) == 1, "dp_rx.c pdev alloc end mark"
 s = s.replace(old, old[:-len('\treturn 0;\n}\n')] + """\tif (nw_wifi_dp_vendor & 4) {
 \t\tif (ab->hw_params.rx_mac_buf_ring)
