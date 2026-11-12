@@ -51,6 +51,7 @@ int nw_wifi_self_scan(void);
 void nw_wifi_rx_state(char *text, int size);
 void nw_fw_diag_dump(unsigned skip, unsigned count);  /* logs the firmware's last diag records (see src/nw_debug.c) */
 void nw_fw_diag_dump_ids(unsigned lo, unsigned hi, unsigned max);  /* kept firmware records with ids in [lo, hi], oldest first */
+int nw_fw_wmi_dump(int from, int lines);  /* the WMI commands the firmware logged receiving, from an index; returns the next (0 done) */
 void nw_wifi_reg_check(const char *when);  /* reads the host-programmed ring registers back and logs the ones that differ */
 void nw_wifi_idle_check(const char *when);  /* the WBM idle list: link descriptors listed twice or outside the banks */
 void nw_wifi_vendor_config(const char *when);  /* writes every differing vendor REO/WBM/TCL config value */

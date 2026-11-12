@@ -1250,6 +1250,18 @@ void wifiThread(void *, wait_result_t) {
             nw_fw_diag_dump(fwdLeft, 80);
             fwdAt = pNow() + 2500;
         }
+        // wifi-fwlog: the WMI commands the firmware logged receiving, 40 a round every 2.5 s, once the diag records are out after a fatal
+        // error (or 25 s after the scan started without one), to diff with the vendor host's stream.
+        static int wmiFrom = -2;
+        static uint64_t wmiAt;
+        if (nw_wifi_fw_log_early_on && wmiFrom == -2 && scanAsked && !fwdLeft && pNow() >= fwdAt + 2500 && (wpssDead || pNow() >= scanStartedAt + 25000)) {
+            wmiFrom = 0; wmiAt = pNow();
+        }
+        if (wmiFrom >= 0 && pNow() >= wmiAt) {
+            const int next = nw_fw_wmi_dump(wmiFrom, 40);
+            wmiFrom = next ? next : -1;
+            wmiAt = pNow() + 2500;
+        }
         // wifi-postmortem=1: once the diag records are out, the firmware's receive ring state from its memory (pmRound), a round each 2.5 s.
         static unsigned postmortem = 2;
         if (postmortem == 2) {postmortem = 0; PE_parse_boot_argn("wifi-postmortem", &postmortem, sizeof postmortem);}

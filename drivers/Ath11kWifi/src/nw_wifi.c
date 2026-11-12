@@ -87,7 +87,7 @@ void nw_wifi_ring_state(char *b, int n) { if (n) b[0] = 0; }
  * verbose level and every module enabled. The firmware sends its log in ~1.5 KB reports, so more of it also means the report before
  * an assert is closer to the assert. Worker only, after the radio's pdev exists. */
 static int nw_fw_log_verbose_ar(struct ath11k *ar) {
-  static const u16 modules[] = { WLAN_MODULE_WAL, WLAN_MODULE_WHAL, WLAN_MODULE_RX, WLAN_MODULE_DATA_TXRX, WLAN_MODULE_HTT };
+  static const u16 modules[] = { WLAN_MODULE_WAL, WLAN_MODULE_WHAL, WLAN_MODULE_RX, WLAN_MODULE_DATA_TXRX, WLAN_MODULE_HTT, WLAN_MODULE_WMI };
   u32 bitmap[MAX_MODULE_ID_BITMAP_WORDS]; int ret = 0;
   mutex_lock(&ar->conf_mutex);
   for (unsigned i = 0; i < ARRAY_SIZE(modules) && !ret; i++) {
@@ -102,7 +102,7 @@ static int nw_fw_log_verbose_ar(struct ath11k *ar) {
     ret = ath11k_wmi_fw_dbglog_cfg(ar, bitmap, &cfg);
   }
   mutex_unlock(&ar->conf_mutex);
-  lx_log(ret ? 3 : 6, "wifi: firmware log verbose for WAL, WHAL, RX, DATA_TXRX, HTT: %d", ret);
+  lx_log(ret ? 3 : 6, "wifi: firmware log verbose for WAL, WHAL, RX, DATA_TXRX, HTT, WMI: %d", ret);
   return ret;
 }
 int nw_wifi_fw_log_verbose(void) {
