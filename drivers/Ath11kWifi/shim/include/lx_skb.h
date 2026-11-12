@@ -62,9 +62,22 @@ typedef struct { int unused; } possible_net_t;
 #define read_pnet(p) (&init_net)
 struct netdev_hw_addr_list { struct list_head list; int count; };
 struct netdev_hw_addr { struct list_head list; u8 addr[32], type; unsigned refcount, sync_cnt; };
-struct net_device_stats { u64 rx_packets, rx_bytes, rx_dropped, tx_packets, tx_bytes, tx_dropped; };
+#ifndef LX_NETSTATS_EXTRA
+#define LX_NETSTATS_EXTRA
+#endif
+struct net_device_stats { u64 rx_packets, rx_bytes, rx_dropped, tx_packets, tx_bytes, tx_dropped; LX_NETSTATS_EXTRA };
 struct lx_netdev_tx;
 struct lx_netdev_tx_stats { u64 accepted, queue_full, busy, dispatched, purged, peak_packets, peak_bytes; };
+/* Extension hooks for a driver that needs more of Linux's fields (QcacldWifi defines them before this header; empty here). */
+#ifndef LX_SKB_EXTRA
+#define LX_SKB_EXTRA
+#endif
+#ifndef LX_SHINFO_EXTRA
+#define LX_SHINFO_EXTRA
+#endif
+#ifndef LX_NETDEV_EXTRA
+#define LX_NETDEV_EXTRA
+#endif
 struct net_device {
   char name[IFNAMSIZ]; u8 dev_addr[ETH_ALEN], perm_addr[ETH_ALEN];
   void *allocation; bool registered, running, netns_immutable;
@@ -90,6 +103,7 @@ struct net_device {
   int (*input)(struct net_device *, struct sk_buff *);
   void (*input_flush)(struct net_device *);
   void (*queue_wake)(struct net_device *);
+  LX_NETDEV_EXTRA
 };
 #define IFF_UP 0x1
 #define IFF_ALLMULTI 0x200
@@ -111,6 +125,9 @@ enum tc_setup_type {
 };
 struct net_device_path_ctx { const struct net_device *dev; u8 daddr[ETH_ALEN]; };
 struct net_device_path;
+#ifndef LX_NDO_EXTRA
+#define LX_NDO_EXTRA
+#endif
 struct net_device_ops {
   int (*ndo_init)(struct net_device *);
   int (*ndo_open)(struct net_device *);
@@ -122,6 +139,7 @@ struct net_device_ops {
   int (*ndo_setup_tc)(struct net_device *, enum tc_setup_type, void *);
   u16 (*ndo_select_queue)(struct net_device *, struct sk_buff *, struct net_device *);
   int (*ndo_fill_forward_path)(struct net_device_path_ctx *, struct net_device_path *);
+  LX_NDO_EXTRA
 };
 static inline void *netdev_priv(const struct net_device *dev) { return dev->priv; }
 static inline void __hw_addr_init(struct netdev_hw_addr_list *list) { INIT_LIST_HEAD(&list->list); list->count = 0; }
@@ -190,6 +208,7 @@ struct sk_buff {
   void (*destructor)(struct sk_buff *);
   bool wifi_acked_valid, wifi_acked;
   u64 control_session, control_generation; /* Notification lifetime; Linux owns all of cb. */
+  LX_SKB_EXTRA
 };
 struct skb_shared_hwtstamps { ktime_t hwtstamp; };
 /* A native DMA allocation is a refcounted page object. Its descriptor lives in
@@ -218,6 +237,7 @@ struct skb_shared_info {
   struct skb_shared_hwtstamps hwtstamps;
   struct page owner;
   skb_frag_t frags[MAX_SKB_FRAGS];
+  LX_SHINFO_EXTRA
 };
 #define skb_shinfo(s) ((s)->shared)
 #define skb_hwtstamps(s) (&skb_shinfo(s)->hwtstamps)
@@ -382,7 +402,7 @@ static inline void list_del_rcu(struct list_head *node) {
 #define ktime_get_ns() ((u64)ktime_get())
 #define ktime_get_boottime() ktime_get()
 #define ktime_get_real_ns() ((u64)ktime_get())
-#define get_random_bytes(p, n) do { for (size_t _i = 0; _i < (n); _i++) ((u8 *)(p))[_i] = (u8)lx_random_u32(); } while (0)
+static inline void get_random_bytes(void *p, size_t n) { for (size_t i = 0; i < n; i++) ((u8 *)p)[i] = (u8)lx_random_u32(); }
 #define do_div(n, b) ({ u32 _r = (u32)((n) % (b)); (n) /= (b); _r; })
 static inline u16 get_unaligned_be16(const void *p) { const u8 *b = p; return (b[0] << 8) | b[1]; }
 static inline u32 get_unaligned_be32(const void *p) { const u8 *b = p; return ((u32)b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]; }

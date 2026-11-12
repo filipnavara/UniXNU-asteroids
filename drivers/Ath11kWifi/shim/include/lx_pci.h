@@ -143,7 +143,7 @@ struct msi_desc *irq_get_msi_desc(unsigned int irq);
 #define SET_SYSTEM_SLEEP_PM_OPS(a, b)
 #define SET_RUNTIME_PM_OPS(a, b, c)
 #define cpumask_of(c) ((const struct cpumask *)0)
-struct cpumask { int unused; };
+struct cpumask { unsigned long bits[1]; };
 #define timer_container_of(v, t, m) container_of(t, __typeof__(*(v)), m)
 #define ECOMM 70
 struct va_format { const char *fmt; va_list *va; };
@@ -202,7 +202,9 @@ struct reserved_mem { phys_addr_t base, size; };
 struct resource { phys_addr_t start, end; };
 #define IPV6_ADDR_SCOPE_LINKLOCAL 2
 #define IPV6_ADDR_SCOPE_GLOBAL 14
+#ifndef LX_HAVE_INET6_STRUCTS /* QcacldWifi defines the Linux layouts */
 struct inet6_ifaddr { int unused; }; struct inet6_dev { int unused; }; struct ifacaddr6 { int unused; };
+#endif
 #define ipv6_addr_src_scope(a) 0
 #define QCOM_SCM_LX 1
 #define DEFINE_MUTEX(n) struct mutex n = { 0 }

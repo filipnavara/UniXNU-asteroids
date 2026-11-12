@@ -51,10 +51,14 @@ int rhashtable_remove_fast(struct rhashtable *t, struct rhash_head *obj, struct 
 #define IS_ERR_OR_NULL_LX(p) IS_ERR_OR_NULL(p)
 
 /* polling context: the data path runs it from the dispatcher */
+#ifndef LX_NAPI_EXTRA
+#define LX_NAPI_EXTRA
+#endif
 struct napi_struct {
   struct net_device *dev; int (*poll)(struct napi_struct *, int);
   int weight, scheduled, enabled, polling;
   struct list_head poll_list, rx_list; int state;
+  LX_NAPI_EXTRA
 };
 enum gro_result { GRO_MERGED, GRO_MERGED_FREE, GRO_HELD, GRO_NORMAL, GRO_CONSUMED };
 typedef enum gro_result gro_result_t;
@@ -77,7 +81,7 @@ bool lx_napi_schedule_prep(struct napi_struct *n);
 #define napi_synchronize(n) lx_napi_synchronize(n)
 #define napi_schedule_prep(n) lx_napi_schedule_prep(n)
 #define __napi_schedule(n) lx_napi_schedule(n)
-#define init_dummy_netdev(d) do { memset(d, 0, sizeof *(d)); device_initialize(&(d)->dev); __hw_addr_init(&(d)->mc); } while (0)
+#define init_dummy_netdev(d) ({ memset(d, 0, sizeof *(d)); device_initialize(&(d)->dev); __hw_addr_init(&(d)->mc); 0; })
 #define alloc_netdev_dummy(n) alloc_netdev_mqs(n, "dummy%d", NET_NAME_ENUM, NULL, 1, 1)
 
 struct dmi_header { u8 type, length; u16 handle; };

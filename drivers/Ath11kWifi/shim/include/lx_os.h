@@ -125,7 +125,7 @@ int dev_set_name(struct device *d, const char *format, ...) __printf(2, 3);
 int device_rename(struct device *dev, const char *name);
 static inline void device_enable_async_suspend(struct device *dev) { dev->async_suspend = true; }
 static inline void dev_set_uevent_suppress(struct device *dev, bool suppress) { dev->uevent_suppress = suppress; }
-static inline void device_init_wakeup(struct device *d, int e) { (void)d; (void)e; }
+static inline int device_init_wakeup(struct device *d, int e) { (void)d; (void)e; return 0; }
 static inline int device_may_wakeup(struct device *d) { (void)d; return 0; }
 static inline void pm_wakeup_event(struct device *d, int ms) { (void)d; (void)ms; }
 static inline void pm_runtime_get_noresume(struct device *d) { (void)d; }

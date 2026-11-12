@@ -1,0 +1,184 @@
+diff -ruN --exclude .git vendor-wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+--- vendor-wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c	2026-11-11 14:34:49
++++ wlan/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c	2026-11-12 16:01:40
+@@ -71,6 +71,9 @@
+ #endif
+ #ifdef WIFI_MONITOR_SUPPORT
+ #include <dp_mon.h>
++#else
++/* UniXNU: built without monitor support; dp_main still asks for local packet capture */
++static inline bool dp_mon_mode_local_pkt_capture(struct dp_soc *soc) { return false; }
+ #endif
+ #include "dp_ipa.h"
+ #ifdef FEATURE_WDS
+diff -ruN --exclude .git vendor-wlan/qca-wifi-host-cmn/hif/src/ce/ce_tasklet.c wlan/qca-wifi-host-cmn/hif/src/ce/ce_tasklet.c
+--- vendor-wlan/qca-wifi-host-cmn/hif/src/ce/ce_tasklet.c	2026-11-11 14:34:49
++++ wlan/qca-wifi-host-cmn/hif/src/ce/ce_tasklet.c	2026-11-12 15:57:12
+@@ -440,8 +440,7 @@
+ 		 * Enable the interrupt only when there is no pending frames in
+ 		 * any of the Copy Engine pipes.
+ 		 */
+-		if (test_bit(TASKLET_STATE_SCHED,
+-			     &tasklet_entry->intr_tq.state)) {
++		if (lx_tasklet_scheduled(&tasklet_entry->intr_tq)) {
+ 			hif_info("ce_id%d tasklet was scheduled, return",
+ 				 tasklet_entry->ce_id);
+ 			qdf_atomic_dec(&scn->active_tasklet_cnt);
+@@ -738,7 +737,7 @@
+ {
+ 	struct hif_softc *scn = HIF_GET_SOFTC(hif_ctx);
+ 
+-	if (test_bit(TASKLET_STATE_SCHED, &tasklet_entry->intr_tq.state)) {
++	if (lx_tasklet_scheduled(&tasklet_entry->intr_tq)) {
+ 		hif_debug("tasklet scheduled, return");
+ 		qdf_atomic_dec(&scn->active_tasklet_cnt);
+ 		return false;
+@@ -833,8 +832,8 @@
+ 	/* If CE7 tasklet is triggered, no need to poll CE explicitly,
+ 	 * CE7 SIRQ could reschedule until there is no pending entries
+ 	 */
+-	if (test_bit(TASKLET_STATE_SCHED, &tasklet_entry->intr_tq.state) ||
+-	    test_bit(TASKLET_STATE_RUN, &tasklet_entry->intr_tq.state))
++	if (lx_tasklet_scheduled(&tasklet_entry->intr_tq) ||
++	    lx_tasklet_running(&tasklet_entry->intr_tq))
+ 		return -EBUSY;
+ 
+ 	return ce_poll_reap_by_id(scn, ce_id);
+@@ -853,11 +852,10 @@
+ 		struct qca_napi_info *napi;
+ 
+ 		napi = scn->napi_data.napis[ce_id];
+-		if (test_bit(NAPI_STATE_SCHED, &napi->napi.state))
++		if (lx_napi_scheduled(&napi->napi))
+ 			return -EBUSY;
+ 	} else {
+-		if (test_bit(TASKLET_STATE_SCHED,
+-			     &hif_ce_state->tasklets[ce_id].intr_tq.state))
++		if (lx_tasklet_scheduled(&hif_ce_state->tasklets[ce_id].intr_tq))
+ 			return -EBUSY;
+ 	}
+ 	return 0;
+diff -ruN --exclude .git vendor-wlan/qca-wifi-host-cmn/hif/src/hif_napi.c wlan/qca-wifi-host-cmn/hif/src/hif_napi.c
+--- vendor-wlan/qca-wifi-host-cmn/hif/src/hif_napi.c	2026-11-11 14:34:49
++++ wlan/qca-wifi-host-cmn/hif/src/hif_napi.c	2026-11-12 15:57:12
+@@ -1081,7 +1081,7 @@
+ 		return false;
+ 	}
+ 
+-	if (test_bit(NAPI_STATE_SCHED, &napii->napi.state)) {
++	if (lx_napi_scheduled(&napii->napi)) {
+ 		NAPI_DEBUG("napi scheduled, return");
+ 		qdf_atomic_dec(&scn->active_tasklet_cnt);
+ 		return false;
+diff -ruN --exclude .git vendor-wlan/qca-wifi-host-cmn/qdf/linux/src/qdf_crypto.c wlan/qca-wifi-host-cmn/qdf/linux/src/qdf_crypto.c
+--- vendor-wlan/qca-wifi-host-cmn/qdf/linux/src/qdf_crypto.c	2026-11-11 14:34:49
++++ wlan/qca-wifi-host-cmn/qdf/linux/src/qdf_crypto.c	2026-11-12 16:01:55
+@@ -175,7 +175,7 @@
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
+ static void
+-generate_subkey(struct crypto_aes_ctx *aes_ctx, uint8_t *k1, uint8_t *k2)
++generate_subkey(struct aes_key *aes_ctx, uint8_t *k1, uint8_t *k2)
+ {
+ 	uint8_t l[AES_BLOCK_SIZE] = {
+ 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+@@ -263,13 +263,13 @@
+ 	uint8_t k1[AES_KEYSIZE_128], k2[AES_KEYSIZE_128];
+ 	int cmp_blk;
+ 	int i, num_block = (len + 15) / AES_BLOCK_SIZE;
+-	struct crypto_aes_ctx aes_ctx;
++	struct aes_key aes_ctx;
+ 	int ret;
+ 
+ 	/*
+ 	 * Calculate MIC and then copy
+ 	 */
+-	ret = aes_expandkey(&aes_ctx, key, AES_KEYSIZE_128);
++	ret = aes_preparekey(&aes_ctx, key, AES_KEYSIZE_128);
+ 	if (ret) {
+ 		qdf_err("aes_expandkey failed (%d)", ret);
+ 		return ret;
+diff -ruN --exclude .git vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c
+--- vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c	2026-11-11 14:34:49
++++ wlan/qcacld-3.0/core/hdd/src/wlan_hdd_cfg80211.c	2026-11-12 16:04:10
+@@ -21860,7 +21860,9 @@
+ 			| WIPHY_FLAG_NETNS_OK;
+ 
+ 	if (ucfg_pmo_get_suspend_mode(hdd_ctx->psoc) == PMO_SUSPEND_WOW) {
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 11, 0))
++#ifndef CONFIG_PM
++		/* UniXNU: cfg80211 is built without CONFIG_PM (no wiphy->wowlan) */
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 11, 0))
+ 		wiphy->wowlan = &wowlan_support_cfg80211_init;
+ #else
+ 		wiphy->wowlan.flags = WIPHY_WOWLAN_MAGIC_PKT;
+@@ -29987,6 +29989,28 @@
+ }
+ #endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
++/* UniXNU: newer cfg80211 op signatures (cfg80211_ap_update for change_beacon, radio_idx and link_id parameters); thin
++ * adapters onto the vendor handlers. */
++static int uxn_change_beacon(struct wiphy *wiphy, struct net_device *dev, struct cfg80211_ap_update *info)
++{ return wlan_hdd_cfg80211_change_beacon(wiphy, dev, &info->beacon); }
++static int uxn_set_wiphy_params(struct wiphy *wiphy, int radio_idx, u32 changed)
++{ return wlan_hdd_cfg80211_set_wiphy_params(wiphy, changed); }
++static int uxn_set_txpower(struct wiphy *wiphy, struct wireless_dev *wdev, int radio_idx, enum nl80211_tx_power_setting type, int mbm)
++{ return wlan_hdd_cfg80211_set_txpower(wiphy, wdev, type, mbm); }
++static int uxn_get_txpower(struct wiphy *wiphy, struct wireless_dev *wdev, int radio_idx, unsigned int link_id, int *dbm)
++{ return wlan_hdd_cfg80211_get_txpower(wiphy, wdev, dbm); }
++static int uxn_set_chainmask(struct wiphy *wiphy, int radio_idx, u32 tx, u32 rx)
++{ return wlan_hdd_cfg80211_set_chainmask(wiphy, tx, rx); }
++static int uxn_get_chainmask(struct wiphy *wiphy, int radio_idx, u32 *tx, u32 *rx)
++{ return wlan_hdd_cfg80211_get_chainmask(wiphy, tx, rx); }
++#define wlan_hdd_cfg80211_change_beacon uxn_change_beacon
++#define wlan_hdd_cfg80211_set_wiphy_params uxn_set_wiphy_params
++#define wlan_hdd_cfg80211_set_txpower uxn_set_txpower
++#define wlan_hdd_cfg80211_get_txpower uxn_get_txpower
++#define wlan_hdd_cfg80211_set_chainmask uxn_set_chainmask
++#define wlan_hdd_cfg80211_get_chainmask uxn_get_chainmask
++#endif
+ static struct cfg80211_ops wlan_hdd_cfg80211_ops = {
+ 	.add_virtual_intf = wlan_hdd_add_virtual_intf,
+ 	.del_virtual_intf = wlan_hdd_del_virtual_intf,
+diff -ruN --exclude .git vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_hostapd.c wlan/qcacld-3.0/core/hdd/src/wlan_hdd_hostapd.c
+--- vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_hostapd.c	2026-11-11 14:34:49
++++ wlan/qcacld-3.0/core/hdd/src/wlan_hdd_hostapd.c	2026-11-12 16:01:40
+@@ -1100,7 +1100,11 @@
+ 		dev = assoc_adapter->dev;
+ 	}
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0) /* UniXNU: wdev->mtx is gone, the wiphy lock replaces it */
++	wiphy_lock(dev->ieee80211_ptr->wiphy);
++#else
+ 	mutex_lock(&dev->ieee80211_ptr->mtx);
++#endif
+ 	if (wlan_vdev_mlme_is_active(vdev) != QDF_STATUS_SUCCESS) {
+ 		hdd_debug("Vdev %d mode %d not UP", vdev_id,
+ 			  adapter->device_mode);
+@@ -1138,7 +1142,11 @@
+ 	wlan_cfg80211_ch_switch_notify(dev, &chandef, link_id, puncture_bitmap);
+ 
+ exit:
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0) /* UniXNU: wdev->mtx is gone, the wiphy lock replaces it */
++	wiphy_unlock(dev->ieee80211_ptr->wiphy);
++#else
+ 	mutex_unlock(&dev->ieee80211_ptr->mtx);
++#endif
+ 	hdd_objmgr_put_vdev_by_user(vdev, WLAN_OSIF_ID);
+ }
+ 
+diff -ruN --exclude .git vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+--- vendor-wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c	2026-11-11 14:34:49
++++ wlan/qcacld-3.0/core/hdd/src/wlan_hdd_main.c	2026-11-12 15:54:51
+@@ -11709,7 +11709,9 @@
+ 	}
+ 
+ 	if (ucfg_pmo_get_suspend_mode(hdd_ctx->psoc) == PMO_SUSPEND_WOW) {
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 11, 0))
++#ifndef CONFIG_PM
++		/* UniXNU: cfg80211 is built without CONFIG_PM (no wiphy->wowlan) */
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 11, 0))
+ 		wiphy->wowlan = &wowlan_support_reg_init;
+ #else
+ 		wiphy->wowlan.flags = WIPHY_WOWLAN_ANY |

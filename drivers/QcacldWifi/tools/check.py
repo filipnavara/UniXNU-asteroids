@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""tools/check.py <vendor wlan dir> deps|compile|objs|one [file-filter]: builds qcacld-3.0 (out/objs.txt, out/cflags.txt from
+tools/objlist.sh) against the QcacldWifi shim (shim/include) and the Ath11kWifi runtime shim, and reports.
+deps: headers no include path provides; compile: syntax errors grouped by kind and name; objs: objects into out/objs/."""
+import collections, json, re, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+here = Path(__file__).resolve().parent.parent
+wlan = Path(sys.argv[1]).resolve()  # out/wlan after tools/prepare.sh (the patched copy)
+mode = sys.argv[2]
+only = sys.argv[3] if len(sys.argv) > 3 else ''
+W = wlan / 'qcacld-3.0'
+A = here.parent / 'Ath11kWifi'
+clang = subprocess.run(['xcrun', '-f', 'clang'], check=True, capture_output=True, text=True).stdout.strip()
+resource = subprocess.run([clang, '-print-resource-dir'], check=True, capture_output=True, text=True).stdout.strip() + '/include'
+base = ['-target', 'arm64e-apple-ios27.0', '-mkernel', '-O1', '-ffreestanding', '-fno-builtin', '-fno-common', '-fno-strict-aliasing',
+        '-fwrapv', '-fno-stack-protector', '-mgeneral-regs-only', '-std=gnu11', '-w',
+        '-D__linux__', '-DLINUX', '-D__KERNEL__', '-DKBUILD_MODNAME="qca_cld3_qca6750"', '-nostdinc', '-isystem', str(A / 'shim/libc'), '-isystem', resource,
+        '-include', 'qcacld_prelude.h', '-include', 'lx_pci.h', '-include', 'qcacld_kernel.h', '-include', 'qcacld_net.h',
+        '-I', str(here / 'shim/include'), '-I', str(A / 'shim/include'), '-I', str(A / 'include'), '-I', str(A / 'out/pinned'),
+        '-I', str(A / 'out'), '-I', str(A / 'out/cfg80211'), '-I', str(W / 'uapi/linux'), '-I', str(here / 'out/platform-inc')]
+vendor, raw, i = [], (here / 'out/cflags.txt').read_text().split('\n'), 0
+while i < len(raw):
+    f = raw[i].strip()
+    if f == '-include' and i + 1 < len(raw):
+        vendor += ['-include', str((W / raw[i + 1].strip()).resolve())]; i += 2; continue
+    if f.startswith('-I'):
+        p = f[2:]; vendor.append('-I' + (str((W / p).resolve()) if not p.startswith('/') else p))
+    elif f.startswith('-D'):
+        if f.count('"') == 1:  # a define split over lines (BUILD_TAG): keep it as one string
+            while i + 1 < len(raw) and '"' not in raw[i + 1]: i += 1
+            i += 1; f = f.split('"')[0] + '"qcacld"'
+        vendor.append(f)
+    i += 1
+# the platform headers under the names a kernel build installs them as
+pi = here / 'out/platform-inc'
+for name, target in (('net/cnss2.h', 'cnss2.h'), ('net/cnss_utils.h', 'cnss_utils.h'), ('net/cnss_prealloc.h', 'cnss_prealloc.h'),
+                     ('net/cnss_nl.h', 'cnss_nl.h'), ('soc/qcom/icnss2.h', 'icnss2.h')):
+    link = pi / name; link.parent.mkdir(parents=True, exist_ok=True)
+    if not link.exists(): link.symlink_to(wlan / 'platform/inc' / target)
+srcs = [o[:-2] + '.c' for o in (here / 'out/objs.txt').read_text().split() if o and (W / (o[:-2] + '.c')).exists()]
+srcs = [s for s in srcs if only in s]
+
+if mode == 'one':
+    r = subprocess.run([clang, '-fsyntax-only', '-ferror-limit=60', *base, *vendor, str(W / srcs[0])], capture_output=True, text=True, cwd=W)
+    for l in r.stderr.splitlines():
+        if 'error' in l: print(l.replace(str(wlan) + '/', '')[:240])
+    raise SystemExit
+
+def run(src):
+    if mode == 'deps':
+        r = subprocess.run([clang, '-M', '-MG', *base, *vendor, str(W / src)], capture_output=True, text=True, cwd=W)
+        files = r.stdout.replace('\\\n', ' ').split(':', 1)[-1].split()
+        return src, [f for f in files if not f.startswith('/') and not (W / f).exists()]
+    if mode == 'objs':
+        o = here / 'out/objs' / (src.replace('../', '').replace('/', '__')[:-2] + '.o'); o.parent.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run([clang, '-c', *base, *vendor, str(W / src), '-o', str(o)], capture_output=True, text=True, cwd=W)
+    else:
+        r = subprocess.run([clang, '-fsyntax-only', '-ferror-limit=0', *base, *vendor, str(W / src)], capture_output=True, text=True, cwd=W)
+    return src, [l for l in r.stderr.splitlines() if 'error:' in l]
+
+with ThreadPoolExecutor(12) as ex:
+    res = list(ex.map(run, srcs))
+if mode == 'deps':
+    count = collections.Counter(m for _, ms in res for m in set(ms))
+    print(len(count), 'missing headers over', len(srcs), 'sources')
+    for h, n in count.most_common(): print(f'{n:4d} {h}')
+    raise SystemExit
+kinds, names, per = collections.Counter(), collections.Counter(), {}
+for src, errs in res:
+    per[src] = len(errs)
+    seen = set()
+    for e in errs:
+        m = re.search(r'error: (.*)', e); msg = m[1] if m else e
+        kinds[re.sub(r"'[^']*'", "'X'", msg)] += 1
+        for n in re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", msg):
+            if (n, msg) not in seen: names[n] += 1; seen.add((n, msg))
+(here / 'out/check.json').write_text(json.dumps({'kinds': kinds.most_common(), 'names': names.most_common(), 'per': per}, indent=0))
+print(f"{sum(1 for v in per.values() if v == 0)} of {len(per)} sources clean; {sum(per.values())} errors; {len(names)} distinct names")
+for k, n in kinds.most_common(12): print(f'{n:7d} {k}')

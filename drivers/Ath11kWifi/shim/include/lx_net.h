@@ -14,6 +14,9 @@ struct kvec { void *iov_base; size_t iov_len; };
 struct msghdr { void *msg_name; int msg_namelen; unsigned int msg_flags; };
 struct net { int unused; };
 extern struct net init_net;
+#ifndef LX_SOCK_EXTRA
+#define LX_SOCK_EXTRA
+#endif
 struct sock {
   void *sk_user_data; void (*sk_data_ready)(struct sock *); void (*sk_error_report)(struct sock *);
   struct list_head rx; u32 port; int reset; u32 peer_node, peer_port; int connected;
@@ -23,6 +26,7 @@ struct sock {
   bool (*try_hold)(struct sock *);
   void (*put)(struct sock *);
   void (*wifi_ack)(struct sock *, bool valid, bool acked);
+  LX_SOCK_EXTRA
 };
 static inline bool sk_requests_wifi_status(struct sock *sk) {
   return sk && sk->wifi_status && sk->try_hold && sk->put;
