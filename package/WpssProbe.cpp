@@ -62,6 +62,7 @@ void note(const char *prefix, const char *text) {
     native_wpss_text[at] = 0;
 }
 
+int32_t gVrm[4];  // wifi-vrm: the three votes' results, [3] set once voted (asteroids_wpss_vrm)
 unsigned gMode;
 QcomSmemPartition gPart;
 bool gHavePart;
@@ -429,6 +430,7 @@ bool start() {
         const int a = R::voteVrm("smpb3", 1040), b = R::voteVrm("smpb1", 1856), c = R::voteVrm("smpb2", 1256);
         snprintf(text, sizeof text, "smpb3 1040 %d, smpb1 1856 %d, smpb2 1256 %d", a, b, c);
         note("vrm: ", text);
+        gVrm[0] = a; gVrm[1] = b; gVrm[2] = c; gVrm[3] = 1;
     }
     stage(StLoadState);
     if ((rc = R::voteRails("cx.lvl", "mx.lvl", kLevelProxy, kLevelProxy))) {
@@ -507,6 +509,8 @@ extern "C" int asteroids_wpss_aop(const char *message) {
     return 0;
 }
 extern "C" int32_t asteroids_wpss_aop_result(void) {return gAopPending ? 1 : gAopResult;}
+// The wifi-vrm votes: 0 not voted, else 1 with the three results (smpb3, smpb1, smpb2) in out.
+extern "C" int asteroids_wpss_vrm(int32_t out[3]) {for (int i = 0; i < 3; ++i) out[i] = gVrm[i]; return gVrm[3];}
 // The post-mortem from the WLAN worker: asks for the carveout once (after the WPSS reported a fatal error) and returns gPmState.
 extern "C" int asteroids_wpss_postmortem(void) {
     if (!gPmState && gRunning && (gSlave & kFatal)) {gPmState = 1; R::wakeWpss();}

@@ -43,6 +43,7 @@ extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message);
 extern "C" int32_t asteroids_wpss_soc_wake_in(void);
 extern "C" int asteroids_wpss_aop(const char *message);
 extern "C" int32_t asteroids_wpss_aop_result(void);
+extern "C" int asteroids_wpss_vrm(int32_t out[3]);
 extern "C" int asteroids_wpss_postmortem(void);
 extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *out, uint32_t words);
 extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
@@ -1207,6 +1208,7 @@ void wifiThread(void *, wait_result_t) {
             PE_parse_boot_argn("wifi-awake", &awake, sizeof awake);
             if (awake) {
                 nw_wifi_reg_check("before the votes");
+                {int32_t v[3]; const int voted = asteroids_wpss_vrm(v); if (voted) logf(6, "wifi: supply votes smpb3 %d smpb1 %d smpb2 %d", v[0], v[1], v[2]);}
                 logSmp2p("before");
                 const int32_t ep = asteroids_wpss_smp2p_send(2, 7);
                 logf(6, "wifi: ep power save exit %x", ep);
