@@ -164,6 +164,26 @@ assert 'void nw_board_mac' in s
 open(dst, 'w').write(s)
 PY
 grep -q 'nw_board_mac(ar->mac_addr)' $O/mac.c || { echo "mac.c patch missed" >&2; exit 1; }
+# The vendor host's data path where ath11k's differs (audit, see the notes), each behind a bit of nw_wifi_dp_vendor (board:
+# wifi-dp-vendor=MASK, 0 keeps ath11k's): 1 no HTT PPDU_STATS_CFG at radio start (the vendor sends it only for enhanced stats or
+# monitor mode); 8 no per-vdev RX_DECAP_TYPE / TX_ENCAP_TYPE (the vendor never sends them; WMI_INIT's decap applies). 2 and 4: dp_rx.c.
+python3 - "$O/mac.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '\tret = ath11k_dp_tx_htt_h2t_ppdu_stats_req(ar,\n\t\t\t\t\t\t  HTT_PPDU_STATS_TAG_DEFAULT);\n'
+assert s.count(old) == 1, "mac.c ppdu stats mark"
+s = s.replace(old, '\t{\n\t\textern unsigned nw_wifi_dp_vendor;\n\n\t\tret = (nw_wifi_dp_vendor & 1) ? 0 :\n'
+              '\t\t\tath11k_dp_tx_htt_h2t_ppdu_stats_req(ar, HTT_PPDU_STATS_TAG_DEFAULT);\n'
+              '\t\tath11k_info(ab, "dp vendor 0x%x: ppdu stats request %s\\n", nw_wifi_dp_vendor,\n'
+              '\t\t\t    (nw_wifi_dp_vendor & 1) ? "skipped" : "sent");\n\t}\n', 1)
+old = '\tath11k_mac_op_update_vif_offload(hw, vif);\n\n\tnss = '
+assert s.count(old) == 1, "mac.c vif offload mark"
+s = s.replace(old, '\t{\n\t\textern unsigned nw_wifi_dp_vendor;\n\n\t\tif (!(nw_wifi_dp_vendor & 8))\n'
+              '\t\t\tath11k_mac_op_update_vif_offload(hw, vif);\n\t}\n\n\tnss = ', 1)
+open(path, 'w').write(s)
+PY
+grep -q 'nw_wifi_dp_vendor & 8' $O/mac.c || { echo "mac.c dp vendor patch missed" >&2; exit 1; }
 # The capability reply carries the open-loop voltage the chip's CX rail needs (voltage_mv; icnss2 votes the "qcom,vreg_ol_cpr" rail, smpb3
 # here, to it). ath11k decodes it and drops it: the copy of qmi.c logs it and leaves it in nw_wifi_cpr_mv for the board.
 rm -f $O/qmi.c
@@ -450,4 +470,66 @@ s = s.replace(old, '\t\tath11k_warn(ab, "htt event %d not handled: %08x %08x %08
 open(path, 'w').write(s)
 PY
 grep -q 'not handled: %08x' $O/dp_rx.c || { echo "dp_rx.c htt default patch missed" >&2; exit 1; }
+# nw_wifi_dp_vendor in dp_rx.c: 4 sends the ring selection and FSE/FISA messages after every ring of the pdev (the vendor's order:
+# all SRING_SETUPs, then RX_RING_SELECTION_CFG, then FSE) instead of right after each rx_mac_buf ring; 2 writes the vendor's REO routing
+# registers after that, once WMI is up and every ring exists (qca6750 hal_reo_setup + hal_reo_set_err_dst_remap_6750): error codes
+# 0-4 and 9-14 to WBM release, 5-8 to the REO exception ring (REO2TCL), destination indications 0-7 = SW1 SW1 SW2 SW3 SW2 RELEASE FW
+# FW, BAR destination cleared (REO2TCL), aging 100/100/100/40 ms; ath11k writes only the hash map and 40 ms aging, before WMI_INIT.
+python3 - "$O/dp_rx.c" <<'PY'
+import sys
+path = sys.argv[1]
+s = open(path).read()
+old = '\t\t\tret = nw_htt_rx_ring_sel(ab, ring_id, mac_id + i);\n\t\t\tif (ret)\n'
+assert s.count(old) == 1, "dp_rx.c ring sel call mark"
+s = s.replace(old, '\t\t\tret = (nw_wifi_dp_vendor & 4) ? 0 : nw_htt_rx_ring_sel(ab, ring_id, mac_id + i);\n\t\t\tif (ret)\n', 1)
+old = '\tif (mac_id == 0 && nw_wifi_fse)\n\t\tnw_htt_fse_setup(ab);\n'
+assert s.count(old) == 1, "dp_rx.c fse call mark"
+s = s.replace(old, '\tif (mac_id == 0 && nw_wifi_fse && !(nw_wifi_dp_vendor & 4))\n\t\tnw_htt_fse_setup(ab);\n', 1)
+fn = 'int ath11k_dp_rx_pdev_alloc(struct ath11k_base *ab, int mac_id)\n'
+helper = """/* Ath11kWifi: the vendor's data path order and REO routing (see tools/prepare-ath11k.sh). */
+unsigned nw_wifi_dp_vendor;
+static void nw_reo_vendor(struct ath11k_base *ab)
+{
+\tconst u32 reo = HAL_SEQ_WCSS_UMAC_REO_REG;
+\tu32 gen = ath11k_hif_read32(ab, reo + 0x0), ix0 = ath11k_hif_read32(ab, reo + 0x4),
+\t    e0 = ath11k_hif_read32(ab, reo + 0x28), e1 = ath11k_hif_read32(ab, reo + 0x2c);
+
+\tath11k_info(ab, "reo before: gen %08x dest ix0 %08x ix2 %08x err ix0 %08x ix1 %08x aging %u\\n", gen, ix0,
+\t\t    ath11k_hif_read32(ab, reo + 0xc), e0, e1, ath11k_hif_read32(ab, reo + 0x564));
+\tath11k_hif_write32(ab, reo + 0x28, 0x00055555);  /* errors 0-4 release, 5-7 REO2TCL */
+\tath11k_hif_write32(ab, reo + 0x2c, 0x05555550);  /* error 8 REO2TCL, 9-14 release */
+\tath11k_hif_write32(ab, reo + 0x4, 0x66523211);   /* SW1 SW1 SW2 SW3 SW2 RELEASE FW FW */
+\tath11k_hif_write32(ab, reo + 0x0, gen & ~0xf0u);  /* BAR to REO2TCL */
+\tath11k_hif_write32(ab, reo + 0x564, 100000);
+\tath11k_hif_write32(ab, reo + 0x568, 100000);
+\tath11k_hif_write32(ab, reo + 0x56c, 100000);
+\tath11k_hif_write32(ab, reo + 0x570, 40000);
+\tath11k_info(ab, "reo after: gen %08x dest ix0 %08x err ix0 %08x ix1 %08x aging %u %u\\n", ath11k_hif_read32(ab, reo + 0x0),
+\t\t    ath11k_hif_read32(ab, reo + 0x4), ath11k_hif_read32(ab, reo + 0x28), ath11k_hif_read32(ab, reo + 0x2c),
+\t\t    ath11k_hif_read32(ab, reo + 0x564), ath11k_hif_read32(ab, reo + 0x570));
+}
+
+"""
+assert s.count(fn) == 1
+s = s.replace(fn, helper + fn, 1)
+old = '\t\t\t\t    "failed to configure mon_status_refill_ring%d %d\\n",\n\t\t\t\t    i, ret);\n\t\t\treturn ret;\n\t\t}\n\t}\n\treturn 0;\n}\n'
+assert s.count(old) == 1, "dp_rx.c pdev alloc end mark"
+s = s.replace(old, old[:-len('\treturn 0;\n}\n')] + """\tif (nw_wifi_dp_vendor & 4) {
+\t\tif (ab->hw_params.rx_mac_buf_ring)
+\t\t\tfor (i = 0; i < ab->hw_params.num_rxdma_per_pdev; i++) {
+\t\t\t\tret = nw_htt_rx_ring_sel(ab, dp->rx_mac_buf_ring[i].ring_id, mac_id + i);
+\t\t\t\tif (ret)
+\t\t\t\t\tath11k_warn(ab, "failed to send rx ring selection %d: %d\\n", i, ret);
+\t\t\t}
+\t\tif (mac_id == 0 && nw_wifi_fse)
+\t\t\tnw_htt_fse_setup(ab);
+\t}
+\tif (mac_id == 0 && (nw_wifi_dp_vendor & 2))
+\t\tnw_reo_vendor(ab);
+\treturn 0;
+}
+""", 1)
+open(path, 'w').write(s)
+PY
+grep -q 'nw_reo_vendor(ab);' $O/dp_rx.c || { echo "dp_rx.c dp vendor patch missed" >&2; exit 1; }
 echo "staged ath11k sources: $PWD/$O"
