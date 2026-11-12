@@ -526,9 +526,10 @@ int pmicGpio(uint32_t ppid, const char *what, const PmicWrite *writes, unsigned 
             for (unsigned i = 0; i < count && !rc; ++i) rc = br_write8(c, apid, writes[i].reg, writes[i].value);
             if (count) IOSleep(2);
             for (unsigned i = 0; i < 6; ++i) br_read8(o, &arb, apid, regs[i], &after[i]);
-            logf(6, "wifi: %s (ppid %03x apid %d owner %d) sts/mode/vin/pull/out/en %02x %02x %02x %02x %02x %02x -> %02x %02x %02x %02x %02x %02x, %d",
-                 what, ppid, apid, owner, before[0], before[1], before[2], before[3], before[4], before[5], after[0], after[1], after[2], after[3],
-                 after[4], after[5], rc);
+            // two lines: the log keeps 100 characters of each
+            logf(6, "wifi: %s: ppid %03x apid %d owner %d", what, ppid, apid, owner);
+            logf(6, "wifi: ppid %03x sts/mode/vin/pull/out/en %02x %02x %02x %02x %02x %02x -> %02x %02x %02x %02x %02x %02x rc %d", ppid,
+                 before[0], before[1], before[2], before[3], before[4], before[5], after[0], after[1], after[2], after[3], after[4], after[5], rc);
         } else {
             logf(3, "wifi: %s: no arbiter channel for ppid %03x (apid %d)", what, ppid, apid);
         }
