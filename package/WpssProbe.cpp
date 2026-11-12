@@ -495,6 +495,7 @@ extern "C" void asteroids_wpss_run(void) {
     if (gMode >= 5) gBacklog = static_cast<Held *>(IOMallocData(sizeof(Held) * kBacklog));
     if (!gLock || !gQueue || !gIntents) {fail(StSmp2p, -12); return;}
     qcom_qrtr_init(&gQrtr, 1, routerSend, nullptr);
+    asteroids_wifi_sleep_clock();  // before the WPSS powers the WCN (wifi-sleepclk; see AsteroidsWifi.cpp)
     if (!start()) return;
     startGlink();
 }

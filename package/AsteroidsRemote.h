@@ -37,6 +37,7 @@ void wakeWpss();
 
 // Implemented by WpssProbe.cpp, which the board build always links beside AdspProbe.cpp.
 extern "C" void asteroids_wpss_run(void);
+extern "C" int asteroids_wifi_sleep_clock(void);   // AsteroidsWifi.cpp: PMK8550 GPIO5, the WCN's 32 kHz sleep clock
 extern "C" void asteroids_wpss_service(void);
 extern "C" int asteroids_wpss_pending(void);
 #endif

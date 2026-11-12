@@ -88,7 +88,7 @@ uint64_t nowNs() {uint64_t ns = 0; absolutetime_to_nanoseconds(mach_absolute_tim
 
 // ---- log ----
 void pLog(int level, const char *line) {
-    if (!native_wlan_lines) return;
+    if (!native_wlan_lines) {IOLog("wifi: %s\n", line); return;}  // before the Wi-Fi worker (the sleep clock at the WPSS start)
     // the per-channel and per-frame debug lines would push the start-up out of the ring
     static uint32_t recent[16];
     uint32_t h = 2166136261u;
@@ -498,9 +498,12 @@ int voteVrms(const Vrm *vrms, unsigned count) {
     if (rscMap) rscMap->release();
     return voted;
 }
-// PMR735B (SPMI SID 5) GPIO1 high: the enable of S1J. PMIC5 GPIO registers: 0x40 mode (1 output), 0x44 output source (bit 7 the level,
-// function 0 normal), 0x46 enable (bit 7).
-int enablePaSupply() {
+// A PMIC5 GPIO over the SPMI arbiter: ppid = SID << 8 | peripheral (GPIOn at 0xb800 + (n-1) * 0x100 for PMK8550 / PMR735B's own base).
+// Registers: 0x08 status, 0x40 mode (LV/MV: 0 input, 1 output), 0x41 voltage source, 0x42 pull (5 none), 0x44 output source (bits 3:0
+// the function: 0 normal, 2 func1; bit 7 the level for normal), 0x46 enable (bit 7). Logs the registers before and after the writes
+// (none: only read). Returns 0, or a negative error (no arbiter channel, a refused write).
+struct PmicWrite {uint8_t reg, value;};
+int pmicGpio(uint32_t ppid, const char *what, const PmicWrite *writes, unsigned count) {
     IOMemoryMap *core = nullptr, *cnfg = nullptr, *obs = nullptr, *chn = nullptr;
     br_arbiter arb = {mapRegs(kSpmiCore, 0x3000, &core), mapRegs(kSpmiCnfg, 0x4000, &cnfg), 0};
     int rc = -12;
@@ -511,28 +514,44 @@ int enablePaSupply() {
         int apid = -1, owner = -1;
         for (uint32_t i = 0; i < apids && i < 1024; ++i) {
             const uint32_t map = arb.core[(BR_APID_MAP + 4 * i) / 4];
-            if (!map || ((map >> 8) & 0xfff) != 0x588) continue;
+            if (!map || ((map >> 8) & 0xfff) != ppid) continue;
             const int o2 = (int)(arb.cnfg[(BR_CNFG_OWNER + 4 * i) / 4] & 7u);
             if (apid < 0 || o2 == arb.ee) {apid = (int)i; owner = o2;}
         }
         if (o && c && apid >= 0) {
-            uint8_t before[4] = {}, after[4] = {};
-            const uint8_t regs[4] = {0x40, 0x44, 0x46, 0x08};
-            for (unsigned i = 0; i < 4; ++i) br_read8(o, &arb, apid, regs[i], &before[i]);
-            rc = br_write8(c, apid, 0x40, 0x01);
-            if (!rc) rc = br_write8(c, apid, 0x44, 0x80);
-            if (!rc) rc = br_write8(c, apid, 0x46, 0x80);
-            IOSleep(2);  // startup-delay-us 1000
-            for (unsigned i = 0; i < 4; ++i) br_read8(o, &arb, apid, regs[i], &after[i]);
-            logf(6, "wifi: S1J enable (pmr735b gpio1, apid %d owner %d): mode/out/en/sts %02x %02x %02x %02x -> %02x %02x %02x %02x, %d", apid,
-                 owner, before[0], before[1], before[2], before[3], after[0], after[1], after[2], after[3], rc);
+            constexpr uint8_t regs[6] = {0x08, 0x40, 0x41, 0x42, 0x44, 0x46};
+            uint8_t before[6] = {}, after[6] = {};
+            for (unsigned i = 0; i < 6; ++i) br_read8(o, &arb, apid, regs[i], &before[i]);
+            rc = 0;
+            for (unsigned i = 0; i < count && !rc; ++i) rc = br_write8(c, apid, writes[i].reg, writes[i].value);
+            if (count) IOSleep(2);
+            for (unsigned i = 0; i < 6; ++i) br_read8(o, &arb, apid, regs[i], &after[i]);
+            logf(6, "wifi: %s (ppid %03x apid %d owner %d) sts/mode/vin/pull/out/en %02x %02x %02x %02x %02x %02x -> %02x %02x %02x %02x %02x %02x, %d",
+                 what, ppid, apid, owner, before[0], before[1], before[2], before[3], before[4], before[5], after[0], after[1], after[2], after[3],
+                 after[4], after[5], rc);
         } else {
-            logf(3, "wifi: S1J enable: no arbiter channel for pmr735b gpio1 (apid %d)", apid);
+            logf(3, "wifi: %s: no arbiter channel for ppid %03x (apid %d)", what, ppid, apid);
         }
     }
     IOMemoryMap *const maps[4] = {core, cnfg, obs, chn};
     for (IOMemoryMap *m : maps) if (m) m->release();
     return rc;
+}
+// PMR735B (SPMI SID 5) GPIO1 high: the enable of S1J (output, normal function, level high, enabled).
+int enablePaSupply() {
+    constexpr PmicWrite w[] = {{0x40, 0x01}, {0x44, 0x80}, {0x46, 0x80}};
+    return pmicGpio(0x588, "S1J enable (pmr735b gpio1)", w, 3);
+}
+// PMK8550 (SPMI SID 0) GPIO5: the 32 kHz sleep clock to the WCN's LF_CLK_IN. The stock devicetree's pmk8550_gpios default pinctrl
+// (alt_sleep_clk_default: gpio5 func1, output, input disabled, no pull, power source 0), which Android applies at boot and UEFI does
+// not. Without it the Fairphone 6 (same SoC, WCN6755 on ath11k) asserted in whal_wmac_transition_to_fw_control:1734 like ours
+// (Luca Weiss's fix). Before the WPSS starts: wifi-sleepclk=0 leaves it, 2 only reads it.
+int sleepClock() {
+    unsigned mode = 1;
+    PE_parse_boot_argn("wifi-sleepclk", &mode, sizeof mode);
+    if (!mode) return 0;
+    constexpr PmicWrite w[] = {{0x40, 0x01}, {0x41, 0x00}, {0x42, 0x05}, {0x44, 0x02}, {0x46, 0x80}};
+    return pmicGpio(0x0bc, mode == 2 ? "sleep clock (pmk8550 gpio5), read only" : "sleep clock (pmk8550 gpio5)", w, mode == 2 ? 0 : 5);
 }
 
 // ---- interrupts: the chip's message interrupts are GIC SPIs, one per vector ----
@@ -1424,6 +1443,9 @@ extern "C" int asteroids_wifi_vfs_read(const char *name, uint8_t **data, size_t 
 namespace {
 int readVfs(const char *name, uint8_t **data, size_t *size) {return asteroids_wifi_vfs_read(name, data, size);}
 }
+
+// The WPSS start (WpssProbe.cpp asteroids_wpss_run) sets the WCN's sleep clock first.
+extern "C" int asteroids_wifi_sleep_clock(void) {return sleepClock();}
 
 extern "C" void asteroids_wifi_probe(void) {
     unsigned mode = 0;
