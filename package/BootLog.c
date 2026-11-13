@@ -87,6 +87,10 @@ extern volatile uint32_t native_adreno_stall_mem[59] __attribute__((weak_import)
 extern volatile uint32_t native_adreno_stall_fault[32] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_pending[8] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_job_time[8] __attribute__((weak_import));
+extern volatile uint64_t native_adreno_long_jobs[8][8] __attribute__((weak_import));
+extern volatile uint64_t native_adreno_slow_jobs[16][8] __attribute__((weak_import));
+extern volatile uint64_t native_adreno_fence_wake[8] __attribute__((weak_import));
 extern volatile uint32_t native_legacy_timeline[3][10] __attribute__((weak_import));
 extern volatile uint32_t native_gpu_time[16] __attribute__((weak_import));
 extern volatile uint32_t native_gpu_work[18] __attribute__((weak_import));
@@ -1614,6 +1618,34 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         for (unsigned k = first; k < first + count && n > 0 && (size_t)n < sizeof row; ++k) n += snprintf(row + n, sizeof row - n, " %x", native_adreno_stall_fault[k]);
         at = put(out, at, cap, row, sizeof row);
       }
+    }
+  }
+  // The driver's fence waiters (NativeAdrenoPublish.cpp): GPU interrupts handed over, those with the fence bit, completion passes,
+  // waiters woken by them, waits that slept, sleeps that hit the caller's deadline, waiters only the periodic pass woke, ring switches.
+  if (&native_adreno_fence_wake && (native_adreno_fence_wake[0] || native_adreno_fence_wake[2])) {
+    char row[220]; const volatile uint64_t *w = native_adreno_fence_wake;
+    snprintf(row, sizeof row, "[fence wake] irq=%llu fence irq=%llu passes=%llu woken=%llu slept=%llu deadline=%llu periodic woken=%llu switches=%llu",
+             w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  // GPU job durations (UniXNU-sheng fecc4c2): counts over 8/16/33/100 ms, the 8 longest jobs since boot and the newest jobs over 8 ms.
+  // src 1: the CP's stamps (gpu-timeline=1 or diag=1); src 2: the driver's clock, from submission or the ring's previous retirement.
+  if (&native_adreno_job_time && native_adreno_job_time[0]) {
+    char row[260]; const volatile uint32_t *t = native_adreno_job_time;
+    snprintf(row, sizeof row, "[gpu jobs] timed=%u stamped=%u >8ms=%u >16ms=%u >33ms=%u >100ms=%u longest=%uus slow=%u",
+             t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7]);
+    at = put(out, at, cap, row, sizeof row);
+    for (unsigned i = 0; i < 12; ++i) {
+      const volatile uint64_t *j;
+      if (i < 8) { if (!&native_adreno_long_jobs) continue; j = native_adreno_long_jobs[i]; }
+      else { if (!&native_adreno_slow_jobs || i - 8 >= t[7]) continue; j = native_adreno_slow_jobs[(t[7] - 1 - (i - 8)) & 15]; }
+      if (!j[1]) continue;
+      snprintf(row, sizeof row, "[gpu %s] fence=%u pid=%u q=%llx ring=%u pri=%d ibs=%u KiB=%llu us=%llu src=%u lvl=%u role=%u at=%llums lat=%lluus",
+               i < 8 ? "long" : "slow", (uint32_t)j[0], (uint32_t)j[3], (unsigned long long)j[4], (unsigned)(j[0] >> 40 & 15),
+               (int)(j[0] >> 44 & 0xff) - 1, (unsigned)(j[0] >> 32 & 0xff), (unsigned long long)(j[2] >> 10), (unsigned long long)j[1],
+               (unsigned)(j[0] >> 52 & 15), (unsigned)(j[3] >> 40 & 0xffff), (unsigned)(j[3] >> 32 & 0xff),
+               (unsigned long long)(j[5] / 1000), (unsigned long long)j[6]);
+      at = put(out, at, cap, row, sizeof row);
     }
   }
   if (&native_gop_wait_stats && native_gop_wait_stats[0]) {

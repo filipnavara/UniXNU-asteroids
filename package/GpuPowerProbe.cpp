@@ -631,6 +631,7 @@ uint32_t native_gpu_irq[6];
 volatile uint32_t native_gpu_irq_count;
 volatile uint64_t native_gpu_idle_sleeps, native_gpu_idle_spins, native_gpu_idle_timeouts;
 int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
+void native_adreno_gpu_interrupt(uint32_t status) __attribute__((weak_import));   // NativeAdrenoPublish.cpp: asks for the completion pass
 int get_preemption_level(void);
 }
 constexpr uint32_t kGpuIntid = 32 + 300;   // live DT kgsl-3d0 "kgsl_3d0_irq" <0 0x12c 4>: SPI 300, level high
@@ -660,6 +661,10 @@ void gpuIrq(void *) {
     gpuTimeFences();
     gIrqEmpty = status ? 0 : gIrqEmpty + 1;
     if (gIrqEmpty > 100000) {ringWrite(nullptr, A810_RBBM_INT_0_MASK, 0); ringBarrier(nullptr);}
+    // As UniXNU-sheng's gpuIrq (0215f34): the driver's completion pass retires finished jobs and wakes the fence waiters whose fence the
+    // CP wrote (bit 20). Without it the driver's waiters never saw an interrupt and paused on the board's clock, so T39b's waits woke
+    // late. The wakeup below serves this file's own waits.
+    if (native_adreno_gpu_interrupt) native_adreno_gpu_interrupt(status);
     thread_wakeup(event_t(&native_gpu_irq_count));
 }
 unsigned bootArg(const char *name, unsigned fallback) {
@@ -793,6 +798,9 @@ void cpStart() {
         gGpuBuffers[1].iova, const_cast<uint8_t *>(gGpuCpu[2]), gGpuBuffers[2].bytes, gGpuBuffers[2].iova);
     if (attached) {IOLog("ASTEROIDS GPU: cp ring attach %x\n", static_cast<unsigned>(attached)); return;}
     native_adreno_ring_hook = gpuSubmitted;
+    // As NativeAdrenoService: with diag=1, or gpu-timeline=1, framed submissions stamp the CP's always-on counter before and after their
+    // buffers (fence page +512, 64 slots), so [gpu jobs] times jobs on the GPU (src 1) instead of from submission to the driver's notice.
+    gRing.setTimeline(bootArg("gpu-timeline", bootArg("diag", 0) == 1 ? 1 : 0) != 0);
     if (ringWrite(nullptr, A810_CP_RB_RPTR_ADDR_BV, uint32_t(bv_rptr)) ||
         ringWrite(nullptr, A810_CP_RB_RPTR_ADDR_BV + 1, uint32_t(bv_rptr >> 32))) {IOLog("ASTEROIDS GPU: cp BV rptr write failed\n"); return;}
     cpState("before");

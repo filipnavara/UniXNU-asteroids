@@ -36,9 +36,13 @@ static const char lite_jobs[]=
  "com.apple.ndoagent,com.apple.biomesyncd,com.apple.email.maild,com.apple.amsengagementd,com.apple.adid,com.apple.eyereliefd,"
  // Crash or respawn loops seen on hardware (int-176): fairplayd.A2 is KeepAlive and exits at once (22 launches in 6 minutes), passd crashes,
  // obliteration is a data-wipe daemon with nothing to do here. iconservicesagent also dies in CI::GLContext::init, but disabling it leaves
- // the icons missing (seen on hardware), so it stays enabled.
- "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration";
-static char policy[2048],jobs[200];
+ // the icons missing (seen on hardware), so it stays enabled. From UniXNU-sheng (d4c299b, 25a0eaa): coreduetd keeps one thread above 50 % of a
+ // core for the whole boot (here d1 read 100 % busy at its top clock on an idle desktop in every log since the Wi-Fi boots); the advice and
+ // statistics services have nothing to advise on here (sheng: PerfPowerServices held 1.8 of 7 CPUs while it wrote its power database).
+ "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration,com.apple.coreduetd,"
+ "com.apple.PerfPowerServices,com.apple.PerfPowerServicesExtended,com.apple.perfpowermetricd,com.apple.siriinferenced,"
+ "com.apple.siriknowledged,com.apple.siriactionsd,com.apple.duetexpertd,com.apple.modelcatalogd";
+static char policy[4096],jobs[200];
 volatile int sheng_watchdog_policy_status=-1;
 
 // iPadOS 27 (xnu-12377): the boot arguments this board always sets, built into the kernel as sheng's (UniXNU-sheng
