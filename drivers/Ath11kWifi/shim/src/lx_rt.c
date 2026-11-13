@@ -25,7 +25,7 @@ void (*lx_mmio_trace)(volatile void *a, u32 v);   /* host tests only */
 static struct list_head g_work = LIST_HEAD_INIT(g_work);
 static struct list_head g_timers = LIST_HEAD_INIT(g_timers);   /* delayed_work entries ordered by insertion */
 static struct list_head g_hrtimers = LIST_HEAD_INIT(g_hrtimers);
-static struct { int used; unsigned int irq; irq_handler_t h, t; void *id; int pending; int disabled, strict, data_path; } g_irq[64];
+static struct { int used; unsigned int irq; irq_handler_t h, t; void *id; int pending; int disabled, strict; } g_irq[64];
 static u32 g_seed = 0x2545f491u;
 static int g_depth;
 int lx_dispatching(void) { return g_depth != 0; }
@@ -362,7 +362,7 @@ void lx_tasklet_enable(struct tasklet_struct *t) {
 
 /* interrupts */
 int lx_request_irq(unsigned int irq, irq_handler_t h, irq_handler_t t, unsigned long fl, const char *n, void *id) {
-  (void)fl; for (int i = 0; i < 64; i++) if (!g_irq[i].used) { g_irq[i].used = 1; g_irq[i].irq = irq; g_irq[i].h = h; g_irq[i].t = t; g_irq[i].id = id; g_irq[i].pending = 0; g_irq[i].disabled = 0; g_irq[i].strict = n && (!strcmp(n, "bhi") || !strcmp(n, "mhi")); g_irq[i].data_path = n && !strcmp(n, "DP_EXT_IRQ"); return 0; }
+  (void)fl; for (int i = 0; i < 64; i++) if (!g_irq[i].used) { g_irq[i].used = 1; g_irq[i].irq = irq; g_irq[i].h = h; g_irq[i].t = t; g_irq[i].id = id; g_irq[i].pending = 0; g_irq[i].disabled = 0; g_irq[i].strict = n && (!strcmp(n, "bhi") || !strcmp(n, "mhi")); return 0; }
   return -ENOMEM; }
 void lx_free_irq(unsigned int irq, void *id) { for (int i = 0; i < 64; i++) if (g_irq[i].used && g_irq[i].irq == irq && g_irq[i].id == id) g_irq[i].used = 0; }
 /* Disabling holds the bus controller's handlers ("bhi", "mhi"), whose disable and enable pair up around a power down: a disabled one keeps
@@ -670,10 +670,4 @@ int idr_for_each(const struct idr *i, int (*fn)(int, void *, void *), void *data
 
 /* without interrupt delivery from the endpoint, every registered handler is given a turn each round; handlers check their own status */
 void lx_irq_raise_all(void);
-/* Polling raises every handler each millisecond. The radio's data path groups (ath11k "DP_EXT_IRQ") then read and write the chip's
- * REO, WBM and RXDMA ring registers a thousand times a second; lx_irq_data_path_period_ms spaces them out (0: with the others). */
-unsigned lx_irq_data_path_period_ms;
-void lx_irq_raise_all(void) {
-  static u64 next_data_path; const u64 now = lx_now_ms(); const int data_path = !lx_irq_data_path_period_ms || now >= next_data_path;
-  if (data_path) next_data_path = now + lx_irq_data_path_period_ms;
-  for (int i = 0; i < 64; i++) if (g_irq[i].used && (data_path || !g_irq[i].data_path)) g_irq[i].pending = 1; }
+void lx_irq_raise_all(void) { for (int i = 0; i < 64; i++) if (g_irq[i].used) g_irq[i].pending = 1; }

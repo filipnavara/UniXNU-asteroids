@@ -177,24 +177,6 @@ void lx_kfree_skb_reason(struct sk_buff *s, unsigned reason) {
       if (!seen[i].count) seen[i].reason = reason;
       if (seen[i].count++ % 100 == 0) lx_log(6, "wifi: frame dropped, reason %#x (%u so far), len %u", reason, seen[i].count, s->len);
     }
-    /* The first frames mac80211 drops (its reasons are in subsystem 1): the 802.11 header (frame control, addresses 1-3) and the
-     * receive flags of mac80211's status (struct ieee80211_rx_status: flag at byte 24 of the control block). */
-    static unsigned shown;
-    if (reason >> 16 == 1 && shown < 6 && s->len >= 16) {
-      const u8 *h = s->data; u32 flag; memcpy(&flag, s->cb + 24, 4); shown++;
-      lx_log(6, "wifi: drop %#x fc %02x%02x flag %08x len %u", reason, h[0], h[1], flag, s->len);
-      lx_log(6, "wifi: drop a1 %02x:%02x:%02x:%02x:%02x:%02x a2 %02x:%02x:%02x:%02x:%02x:%02x", h[4], h[5], h[6], h[7], h[8], h[9], h[10],
-             h[11], h[12], h[13], h[14], h[15]);
-      /* address 3: the source of a frame from the AP. RX_DROP_U_INVALID_8023 for a broadcast whose source is this station is the AP
-       * relaying the station's own broadcast back (cfg80211 drops it on purpose: wifi87/88 saw it right after the DHCP broadcasts). */
-      if (s->len >= 22) lx_log(6, "wifi: drop a3 %02x:%02x:%02x:%02x:%02x:%02x", h[16], h[17], h[18], h[19], h[20], h[21]);
-      /* the IV after a 24-byte (non-QoS) or 26-byte (QoS) header: CCMP's key id is bits 7:6 of its fourth byte */
-      if (s->len >= 34) {
-        const unsigned hl = (h[0] & 0x80) ? 26 : 24; const u8 *iv = h + hl;
-        lx_log(6, "wifi: drop iv %02x %02x %02x %02x %02x %02x %02x %02x keyid %u", iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], iv[6], iv[7],
-               iv[3] >> 6);
-      }
-    }
   }
   kfree_skb(s);
 }
