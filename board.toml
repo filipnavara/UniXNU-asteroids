@@ -449,6 +449,8 @@ kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_
                "offline-legacy-phase=4", "offline-key-events=1", "aks=1", "aks-sls=3", "offline-hid-input=1", "offline-hid-home=1",
                "touch-hid=1", "buttons=1", "log=1", "smp=1", "armcpu-spi-ipi=1", "armcpu-self-ipi=1", "data-persist=2", "memlimit-scale=4", "cpufreq=4",
                "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1",
+               # Wi-Fi (WCN6750, drivers/Ath11kWifi on the WPSS, package/AsteroidsWifi.cpp): wifid, Settings' networks and joins (porting.toml network).
+               "wifi=5",
                # The GPU add-on (Turnip and the Metal plug-in, arm64e) with the GPU copy to the framebuffer. The zero-copy scanout of iPadOS 17
                # (dpu-scanout=2 dpu-linux=1 dpu-flush=1) is off: with UniXNU's GopFramebuffer on 27 no swap was ever flipped or copied (black screen).
                # The DEVELOPMENT kernel's timing checks are off through the built-in boot arguments (package/BootWatchdogPolicy.c).
@@ -548,6 +550,8 @@ kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_
                "offline-legacy-phase=4", "offline-key-events=1", "aks=1", "aks-sls=3", "offline-hid-input=1", "offline-hid-home=1",
                "touch-hid=1", "buttons=1", "log=1", "smp=1", "armcpu-spi-ipi=1", "armcpu-self-ipi=1", "data-persist=2", "memlimit-scale=4", "cpufreq=4",
                "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1",
+               # Wi-Fi (WCN6750, drivers/Ath11kWifi on the WPSS, package/AsteroidsWifi.cpp): wifid, Settings' networks and joins (porting.toml network).
+               "wifi=5",
                # The GPU add-on (Turnip and the Metal plug-in, arm64e) with the GPU copy to the framebuffer. The zero-copy scanout of iPadOS 17
                # (dpu-scanout=2 dpu-linux=1 dpu-flush=1) is off: with UniXNU's GopFramebuffer on 27 no swap was ever flipped or copied (black screen).
                # The DEVELOPMENT kernel's timing checks are off through the built-in boot arguments (package/BootWatchdogPolicy.c).

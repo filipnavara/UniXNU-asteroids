@@ -35,8 +35,8 @@ icons load (rendered on the CPU) and the wallpaper shows on the home and lock sc
   fixed (2026-11-13, UniXNU 1aa69d2: the Darwin Turnip backend wiped a live BO's entry); the kernel still does not restart
   the GPU after a hang, so a hang freezes the UI until a reboot;
 - iconservicesagent renders icons on the CPU (RenderBox aborted on the GPU once per boot);
-- Wi-Fi (WCN6750, an ath11k port) works with `wifi=5` on the kernel command line, which `board.toml` does not set yet:
-  Settings lists networks and joins them, web pages load; Bluetooth is not started (see `porting.toml`, area `network`).
+- Wi-Fi (WCN6750, an ath11k port) works and is on by default (`wifi=5` in `board.toml` since 2026-11-13; that image is not
+  yet booted): Settings lists networks and joins them, web pages load; Bluetooth is not started (see `porting.toml`, area `network`).
 
 iPadOS 17.7.11 (21H461) remains the board's default profile and boots to the desktop as before. `porting.toml` records each
 area; older test results are in `docs/asteroids-gpu-gen8.md` and `docs/asteroids-touch.md` of rootstockos/iosonandng.
