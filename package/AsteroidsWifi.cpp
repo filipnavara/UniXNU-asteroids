@@ -717,6 +717,19 @@ bool boardMac(uint8_t m[6]) {
     m[0] = (uint8_t)((m[0] & 0xfe) | 0x02);
     return true;
 }
+// The system's own record of the Wi-Fi address, as a boot loader leaves it in the device tree (sheng 3e679fb): MobileGestalt's WifiAddress and
+// WifiAddressData come from /chosen/mac-address-wifi0 and /arm-io/wlan local-mac-address. Without them Settings has no Wi-Fi address and
+// the wireless daemon aborts every join that needs a private address. replace: en0's own address once the module reports it.
+void publishMac(const uint8_t m[6], bool replace) {
+    if (IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane)) {
+        if (replace || !chosen->getProperty("mac-address-wifi0")) chosen->setProperty("mac-address-wifi0", const_cast<uint8_t *>(m), 6);
+        chosen->release();
+    }
+    if (IORegistryEntry *wlan = IORegistryEntry::fromPath("/arm-io/wlan", gIODTPlane)) {
+        if (replace || !wlan->getProperty("local-mac-address")) wlan->setProperty("local-mac-address", const_cast<uint8_t *>(m), 6);
+        wlan->release();
+    }
+}
 
 // Firmware files by name, each read once and kept for the boot. ath11k asks for board-2.bin, then bdwlan.b<board id> (the vendor's name,
 // in image/qca6750/ of the firmware partition), board.bin and regdb.bin; ath11k sends an ELF as such. wifi-bdf=PATH names the board data file in
@@ -976,6 +989,12 @@ void netStart() {
         return;
     }
     gNetStarted = true;
+    static const uint8_t zero[6] = {};
+    uint8_t board[6];
+    if (memcmp(status.mac, zero, 6) && !(boardMac(board) && !memcmp(board, status.mac, 6))) {
+        publishMac(status.mac, true);
+        logf(5, "wifi: en0's address is not the board address; the device tree now carries en0's");
+    }
     sheng_wifi_net_start(status.mac);
 }
 void joinStep() {
@@ -1186,6 +1205,7 @@ bool pmRound(unsigned round) {
 void wifiThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "wifi");
     stage(StThread);
+    if (uint8_t m[6]; boardMac(m)) publishMac(m, false);
     // The WPSS comes up on the ADSP thread once the firmware partition is readable: wait for its "ready" (up to three minutes).
     for (unsigned waited = 0; native_wpss_stats[0] < 7; waited += 250) {
         if (native_wpss_stats[0] < 0 || waited >= 180000) {fail(StWpss, native_wpss_stats[0]); return;}
