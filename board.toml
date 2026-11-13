@@ -470,9 +470,11 @@ gpu_addon = true
 wallpapers = ["ipados27", "ipados27-floating"]
 
 [os_overrides."ios-27.0.1-24A446".payload.runtime.launchd_job_environment."com.apple.iconservices.iconservicesagent"]
-# CoreImage on the CPU for icons, the rest of the agent on the GPU (sheng's): CoreImage looks its built-in kernels up by name
-# (_asgDownH, its downsampler) and the plug-in's translator does not expose them, so every scaled icon failed.
-FORCE_SOFTWARE_RENDERER = "0"
+# The whole agent on the CPU. CoreImage looks its built-in kernels up by name (_asgDownH, its downsampler) and the plug-in's translator
+# does not expose them, so every scaled icon failed on the GPU (sheng's: CoreImage alone on the CPU). With the rest on the GPU as well,
+# RenderBox aborted in RB::Device::make_index_buffer() compositing an icon, once on every boot about 4 minutes in (2026-11-13,
+# logs/data-sysmem3: three iconservicesagent crash reports, all in render_image -> RenderFrame -> alloc_frame_id).
+FORCE_SOFTWARE_RENDERER = "1"
 CI_ENABLE_METAL_GPU = "0"
 
 [os_overrides."ios-27.0.1-24A446".payload.adt]
@@ -577,9 +579,11 @@ wifi_launchd_cache = true
 wifi_bin_prefix = "wifi-bin"
 
 [os_overrides."ipados-27.0.1-24A446".payload.runtime.launchd_job_environment."com.apple.iconservices.iconservicesagent"]
-# CoreImage on the CPU for icons, the rest of the agent on the GPU (sheng's): CoreImage looks its built-in kernels up by name
-# (_asgDownH, its downsampler) and the plug-in's translator does not expose them, so every scaled icon failed.
-FORCE_SOFTWARE_RENDERER = "0"
+# The whole agent on the CPU. CoreImage looks its built-in kernels up by name (_asgDownH, its downsampler) and the plug-in's translator
+# does not expose them, so every scaled icon failed on the GPU (sheng's: CoreImage alone on the CPU). With the rest on the GPU as well,
+# RenderBox aborted in RB::Device::make_index_buffer() compositing an icon, once on every boot about 4 minutes in (2026-11-13,
+# logs/data-sysmem3: three iconservicesagent crash reports, all in render_image -> RenderFrame -> alloc_frame_id).
+FORCE_SOFTWARE_RENDERER = "1"
 CI_ENABLE_METAL_GPU = "0"
 
 [os_overrides."ipados-27.0.1-24A446".payload.adt]
