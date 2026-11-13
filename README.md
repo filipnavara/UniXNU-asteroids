@@ -33,8 +33,8 @@ icons load (slowly: CoreImage runs on the CPU for them) and the wallpaper shows 
 - graphic artifacts in GPU-rendered content; zero-copy scanout (`dpu-scanout=2`) is off;
 - one boot showed an early GPU stall after which new processes could not get a GPU address space (upstream Adreno740's
   recovery work, merged on 2026-11-12, targets it; the sync is not yet booted);
-- no network: Wi-Fi (WCN6750, an ath11k port) is in bring-up on the `asteroids-wifi` branch; the firmware asserts during the
-  first scan (see `porting.toml`, area `network`).
+- Wi-Fi (WCN6750, an ath11k port) works with `wifi=5` on the kernel command line, which `board.toml` does not set yet:
+  Settings lists networks and joins them, web pages load; Bluetooth is not started (see `porting.toml`, area `network`).
 
 iPadOS 17.7.11 (21H461) remains the board's default profile and boots to the desktop as before. `porting.toml` records each
 area; older test results are in `docs/asteroids-gpu-gen8.md` and `docs/asteroids-touch.md` of rootstockos/iosonandng.
