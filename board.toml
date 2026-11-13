@@ -543,6 +543,12 @@ archives = [
 # launchd cache in the add-on take it past 112 MiB.
 size_mib = 128
 root_policies = "{tree}/build/sheng-source-storage/root-policies.bin"
+# The render server composites in 8-bit BGRA instead of half float: QuartzCore's CA::WindowServer::IOMFBDisplay::framebuffer_pixel_format
+# (24A446, dyld_shared_cache_arm64e.01 file offset 0x4061928) keeps 'RGhA' on `tbnz w8, #0` while CADeviceIsVirtualized is set, which
+# MobileGestalt's IsVirtualDevice answers from vmm-present (set below for AMFI). The branch becomes a NOP as a fixup of signed text, as on
+# sheng's macOS 27.3 (a write into the mapped page, AdrenoMetal's fb-bgra=1 experiment, makes the page invalid under code signing). Half
+# float doubled the compositing bandwidth, cost a GPU conversion of every frame and kept direct scanout (dpu-scanout=2, 8-bit only) off.
+text_fixups = ["dyld_shared_cache_arm64e.01,4061928,08060037,1f2003d5"]
 kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_panic", "use_contiguous_hint=0",
                "ml-timeout-lock-panic-scale=40", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
                "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=0", "offline-legacy-register=1", "offline-legacy-gop=1",
