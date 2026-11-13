@@ -31,8 +31,10 @@ buttons work, the GPU add-on renders through Metal on the Adreno 810 (metal2vulk
 icons load (slowly: CoreImage runs on the CPU for them) and the wallpaper shows on the home and lock screens. Open issues:
 
 - graphic artifacts in GPU-rendered content; zero-copy scanout (`dpu-scanout=2`) is off;
-- one boot showed an early GPU stall after which new processes could not get a GPU address space (upstream Adreno740's
-  recovery work, merged on 2026-11-12, targets it; the sync is not yet booted);
+- the GPU fault and freeze after the 2026-11-12 sync (about half of the boots, mostly once the lock screen was touched) is
+  fixed (2026-11-13, UniXNU 1aa69d2: the Darwin Turnip backend wiped a live BO's entry); the kernel still does not restart
+  the GPU after a hang, so a hang freezes the UI until a reboot;
+- iconservicesagent renders icons on the CPU (RenderBox aborted on the GPU once per boot);
 - no network: Wi-Fi (WCN6750, an ath11k port) is in bring-up on the `asteroids-wifi` branch; the firmware asserts during the
   first scan (see `porting.toml`, area `network`).
 
