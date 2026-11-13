@@ -24,19 +24,19 @@ UniXNU's:
 | `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids`) | GOP framebuffer and the GPU copy presenter |
 | `kits/AdrenoFirmware` | [filipnavara/AdrenoFirmware](https://github.com/filipnavara/AdrenoFirmware) (branch `asteroids`) | GMU/HFI kit with the A8xx performance table and votes |
 
-## State (2026-11-12)
+## State (2026-11-13)
 
 **iPadOS 27.0.1 (24A446, the iPad17,3 images)** boots from UFS to the home screen on all eight cores (2026-11-11): touch and
 buttons work, the GPU add-on renders through Metal on the Adreno 810 (metal2vulkan and Turnip), the system apps are there,
-icons load (slowly: CoreImage runs on the CPU for them) and the wallpaper shows on the home and lock screens. Open issues:
+icons load (rendered on the CPU) and the wallpaper shows on the home and lock screens. Open issues:
 
 - graphic artifacts in GPU-rendered content; zero-copy scanout (`dpu-scanout=2`) is off;
 - the GPU fault and freeze after the 2026-11-12 sync (about half of the boots, mostly once the lock screen was touched) is
   fixed (2026-11-13, UniXNU 1aa69d2: the Darwin Turnip backend wiped a live BO's entry); the kernel still does not restart
   the GPU after a hang, so a hang freezes the UI until a reboot;
 - iconservicesagent renders icons on the CPU (RenderBox aborted on the GPU once per boot);
-- no network: Wi-Fi (WCN6750, an ath11k port) is in bring-up on the `asteroids-wifi` branch; the firmware asserts during the
-  first scan (see `porting.toml`, area `network`).
+- Wi-Fi (WCN6750, an ath11k port) works with `wifi=5` on the kernel command line, which `board.toml` does not set yet:
+  Settings lists networks and joins them, web pages load; Bluetooth is not started (see `porting.toml`, area `network`).
 
 iPadOS 17.7.11 (21H461) remains the board's default profile and boots to the desktop as before. `porting.toml` records each
 area; older test results are in `docs/asteroids-gpu-gen8.md` and `docs/asteroids-touch.md` of rootstockos/iosonandng.

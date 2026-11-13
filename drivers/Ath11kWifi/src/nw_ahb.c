@@ -85,20 +85,7 @@ void *lx_ioremap(phys_addr_t pa, size_t n) { return nw_board && nw_board->map_ph
 /* The open-loop voltage of the chip's CX rail from the QMI capability reply (0 until it comes); the board votes its rail to it. */
 u32 nw_wifi_cpr_mv;
 void nw_wifi_cpr_report(u32 mv) { nw_wifi_cpr_mv = mv; if (nw_board && nw_board->cpr_voltage) nw_board->cpr_voltage(mv); }
-/* The firmware's MHI state words (QMI device information, vendor TLVs 0x12/0x13; 0 until it comes): link state at +0, endpoint
- * awake at +4. The board reads them around its SoC wake handshake. */
-u64 nw_wifi_mhi_pa;
-/* The host's DMA memory as the firmware is told it (QMI host capability ddr_range, icnss2's): start, size of the board's DMA
- * window as the chip addresses it, the MSA region, the MSI doorbell's page. Set by the board before the module starts; 0 sends none. */
-u64 nw_wifi_ddr_range[6];
 /* Whether the firmware's WMI host memory requests are answered (1, as the vendor host) or only logged (0); set by the board. */
 unsigned nw_wifi_wmi_mem = 1;
-/* Which of the vendor host's WMI_INIT values replace ath11k's (bit mask, see tools/prepare-ath11k.sh); set by the board. */
-unsigned nw_wifi_wmi_vendor;
-/* The vendor host's flow search engine setup after the rings (bit mask: 1 FSE setup, 2 FISA config, see tools/prepare-ath11k.sh); set by the board. */
-unsigned nw_wifi_fse;
 /* IMPS for the WCN6750 although the staged core.c turns it off (see tools/prepare-ath11k.sh); set by the board. */
 unsigned nw_wifi_idle_ps;
-/* More of the vendor host's choices (bit mask, see tools/prepare-ath11k.sh) and the DDR type for the QMI host capability; set by the board. */
-unsigned nw_wifi_qmi_vendor, nw_wifi_ddr_type = 7;
-u32 nw_wifi_mhi_size;

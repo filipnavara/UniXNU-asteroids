@@ -46,21 +46,8 @@ extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message);
 extern "C" int32_t asteroids_wpss_soc_wake_in(void);
 extern "C" int asteroids_wpss_aop(const char *message);
 extern "C" int32_t asteroids_wpss_aop_result(void);
-extern "C" int asteroids_wpss_vrm(int32_t out[3]);
-extern "C" int asteroids_wpss_postmortem(void);
-extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *out, uint32_t words);
-extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap);
-extern "C" volatile uint64_t nw_wifi_mhi_pa;   // the module's: the firmware's MHI state words (QMI device information)
-extern "C" volatile uint32_t nw_wifi_mhi_size;
-extern "C" volatile unsigned nw_wifi_idle_ps;  // the module's: IMPS on (wifi-idle-ps=1)
-extern "C" volatile unsigned nw_wifi_fw_log_early_on;  // the module's: firmware log levels before the ring setup
-extern "C" volatile unsigned nw_wifi_qmi_vendor, nw_wifi_ddr_type;  // the module's: more vendor choices, DDR type
-extern "C" volatile unsigned nw_wifi_dp_vendor;  // the module's: the vendor's data path choices (bit mask)
-extern "C" volatile unsigned nw_wifi_fse;  // the module's: the vendor's flow search engine setup (bit mask)
-extern "C" volatile unsigned nw_wifi_wmi_vendor;  // the module's: vendor WMI_INIT values (bit mask)
+extern "C" volatile unsigned nw_wifi_idle_ps;  // the module's: IMPS on (wifi-idle-ps, default 1)
 extern "C" volatile unsigned nw_wifi_wmi_mem;  // the module's: answer the firmware's WMI host memory requests
-extern "C" volatile unsigned nw_wifi_scan_mask;  // the module's: the part of the channel list the next self-test scan takes
-extern "C" volatile uint64_t nw_wifi_ddr_range[6];  // the module's: the DMA memory the firmware is told about (QMI host capability)
 extern "C" int asteroids_modem_file(const char *path, uint8_t **data, size_t *size);
 extern "C" volatile int32_t native_wpss_stats[16];
 extern "C" volatile uint32_t nw_wifi_cpr_mv;  // the module's: the CX voltage the firmware asked for (QMI capability reply)
@@ -133,7 +120,7 @@ struct Arena {uint8_t *va; uint64_t pa, iova; size_t bytes; struct Block {uint32
 // physical address in XNU's memory the copy engines coped, but the receive DMA lost buffers and the firmware asserted in
 // whalRecvDmaLeakRecovery at the first scan. Translating the WLAN stream instead faulted: its boot-loader bank (70) is not the kernel's
 // to program (an SError at the first context register write). wifi-dma-pa=ADDR moves the window; wifi-dma-pa=0 allocates it in XNU's
-// memory as before.
+// memory.
 constexpr uint64_t kLowWindow = 0x8ac00000, kLowWindowBytes = 230ull << 20;
 bool arenaInit(size_t bytes) {
     gArena.blocks = static_cast<Arena::Block *>(IOMallocData(kArenaBlocks * sizeof(Arena::Block)));
@@ -144,13 +131,12 @@ bool arenaInit(size_t bytes) {
     if (low) {
         gArena.pa = low;
     } else {
-        // 2 MiB aligned (the mask's low zeros): the translated window maps it with 2 MiB blocks.
         gArena.memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, (IOOptionBits)kIODirectionInOut | (IOOptionBits)kIOMemoryPhysicallyContiguous,
                                                                          bytes, 0x0000000fffe00000ull);
         if (!gArena.memory || gArena.memory->prepare() != kIOReturnSuccess) return false;
         gArena.pa = gArena.memory->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone);
     }
-    gArena.iova = gArena.pa;  // the chip's address of the window: the physical one until setupSmmu() translates it
+    gArena.iova = gArena.pa;  // the chip's address of the window (the SMMU passes the streams through)
     // A second, non-cacheable mapping of the same pages: the chip's view and the CPU's then agree without cache maintenance. Write-combined,
     // not kIOMapInhibitCache: on xnu-12377 that is Device memory, where bzero's wide and DC ZVA stores take alignment faults (the first
     // boot panicked in bzero of this window); the board's zzzzzzzzza patch keeps write-combined DRAM mappings Normal non-cacheable.
@@ -238,7 +224,6 @@ void smmuWr(void *ctx, unsigned o, uint32_t v) {
 // are kept for faultReport().
 IOMemoryMap *gSmmuMap;
 uint32_t gBanks[4], gBankCount, gPages;
-int gDumpSlot1401 = -1;  // the stream-match group of 0x1401 as describeStreams found it
 void describeStreams(const struct smmu_io &io, const char *when) {
     const uint32_t idr0 = smmuRd(io.ctx, 0x20), idr1 = smmuRd(io.ctx, 0x24);
     unsigned count = idr0 & 255;
@@ -251,7 +236,6 @@ void describeStreams(const struct smmu_io &io, const char *when) {
             const uint32_t mask = (smr >> 16) & 0x7fff;
             if (((smr ^ stream) & 0xffff & ~mask) != 0) continue;
             const uint32_t s2cr = smmuRd(io.ctx, 0xc00 + 4 * i), bank = s2cr & 255, type = (s2cr >> 16) & 3;
-            if (stream == kStreams[1] && smr == (0x80000000u | stream)) gDumpSlot1401 = (int)i;
             const unsigned cb = (gPages + bank) * 4096u;
             logf(6, "wifi: smmu %s: stream %x smr[%u]=%08x s2cr=%08x bank %u sctlr=%08x cbar=%08x cba2r=%08x ttbr0=%08x%08x", when, stream, i,
                  smr, s2cr, bank, type ? 0 : smmuRd(io.ctx, cb), smmuRd(io.ctx, 0x1000 + 4 * bank), smmuRd(io.ctx, 0x1800 + 4 * bank),
@@ -278,157 +262,13 @@ void faultReport() {
                       smmuRd(ctx, cb + 0x60), smmuRd(ctx, cb + 0x68), smmuRd(ctx, cb + 0x6c));
     }
 }
-// ---- the translated window (wifi-iommu=1, not the default: see arenaInit): ath11k gives this chip a 32-bit DMA mask, and its receive DMA lost buffers at
-// the window's 36-bit physical addresses (the firmware asserted in whalRecvDmaLeakRecovery at the first scan; the copy engines coped).
-// The boot loader leaves 0x1401 in a translating bank of its own; that bank is reprogrammed with a table of ours: a 32-bit input space,
-// 4 KiB granule, the window at IOVA 0xb0000000 (the stock devicetree's qcom,iommu-dma-addr-pool) in 2 MiB blocks, and the 2 MiB block
-// holding the MSI target mapped one to one. Both WLAN streams then use the bank. SMMUv2 context bank registers: SCTLR 0x0, TCR2 0x10,
-// TTBR0 0x20, TCR 0x30, MAIR0 0x38, FSR 0x58, TLBIALL 0x618, TLBSYNC 0x7f0, TLBSTATUS 0x7f4.
-constexpr uint64_t kIovaBase = 0xb0000000;
-uint32_t smmuRd(void *ctx, unsigned o);
-void smmuWr(void *ctx, unsigned o, uint32_t v);
-int findSlot(void *ctx, uint16_t stream, unsigned count) {
-    for (unsigned i = 0; i < count; ++i) if (smmuRd(ctx, 0x800 + 4 * i) == (0x80000000u | stream)) return (int)i;
-    return -1;
-}
-uint64_t gMsiIova;  // the MSI doorbell as the chip addresses it, when the window is translated
-// The boot loader's bank of stream 0x1401 (bank 70 here) is reprogrammed with tables of ours; both WLAN streams then use it. ownBank
-// false (wifi-iommu=1): the MSI doorbell one to one. ownBank true (wifi-iommu=2): icnss2's layout, the DMA window at IOVA 0xb0000000
-// (qcom,iommu-dma-addr-pool), the MSI doorbell's block inside the same window (icnss2 dma_map_resource()s it there) and the WLAN MSA
-// region one to one. An SError ended both earlier attempts (wifi22 somewhere in these steps, wifi42 while reading other banks).
-// The accesses of setupTranslation, each logged before it happens. The boot log keeps these lines only every 2 s (BootLog.c
-// LogPeriodMs), so a line logged less than 2 s before a fatal SError is lost: wifi42-44's logs end at a slot boundary, not at the
-// faulting access. wifi-iommu-pause=MS waits MS milliseconds after each line (2200 makes every line reach the log first).
-unsigned gStepPause, gTransBank = 70;
-void stepPause() {if (gStepPause) IOSleep(gStepPause);}
-uint32_t tRd(void *ctx, unsigned o) {logf(6, "wifi: iommu rd %x", o); stepPause(); const uint32_t v = smmuRd(ctx, o); logf(6, "wifi: iommu rd %x = %08x", o, v); return v;}
-void tWr(void *ctx, unsigned o, uint32_t v) {logf(6, "wifi: iommu wr %x = %08x", o, v); stepPause(); smmuWr(ctx, o, v);}
-bool setupTranslation(void *ctx, bool ownBank) {
-    const uint32_t idr0 = tRd(ctx, 0x20), idr1 = tRd(ctx, 0x24);
-    unsigned count = idr0 & 255;
-    if (count > 128) count = 128;
-    const unsigned pages = 1u << (((idr1 >> 28) & 7) + 1), banks = idr1 & 255;
-    // The stream-match group of 0x1401 from the stream dump, not a second scan: wifi44 and wifi49 died between the IDR1 read and the
-    // next logged access, where only that scan ran (the same reads the dump did without fault moments before).
-    const int slot = gDumpSlot1401;
-    logf(6, "wifi: iommu: slot %d from the stream dump (count %u, pages %u, banks %u)", slot, count, pages, banks);
-    stepPause();
-    if (slot < 0) {logf(3, "wifi: iommu: no stream-match group for %x", kStreams[1]); return false;}
-    const uint32_t s2cr = tRd(ctx, 0xc00 + 4 * slot);
-    const uint32_t bank = s2cr & 255;
-    gTransBank = bank;
-    if ((s2cr >> 16) & 3 || bank >= banks) {logf(3, "wifi: iommu: stream %x is not in a translating bank (s2cr %08x)", kStreams[1], s2cr); return false;}
-    // ownBank: still the boot loader's bank (reading another bank's registers to look for a free one raised an SError: wifi42), but
-    // with icnss2's layout below. Every step is logged first: the fault kills only this thread and the log survives.
-    logf(6, "wifi: iommu: bank %u, cbar %08x cba2r %x sctlr %x ttbr0 %08x%08x tcr %x", bank, tRd(ctx, 0x1000 + 4 * bank), tRd(ctx, 0x1800 + 4 * bank),
-         tRd(ctx, (pages + bank) * 4096u), tRd(ctx, (pages + bank) * 4096u + 0x24), tRd(ctx, (pages + bank) * 4096u + 0x20),
-         tRd(ctx, (pages + bank) * 4096u + 0x30));
-    if (gArena.bytes & 0x1fffff || gArena.pa & 0x1fffff || gArena.bytes > (64u << 20)) {logf(3, "wifi: iommu: window not 2 MiB aligned"); return false;}
-    // Tables: page 0 the L1 table (4 entries for 4 GiB), page 1 the L2 table of 0x80000000-0xbfffffff, page 2 that of 0-0x3fffffff.
-    // From the DMA window, whose only mapping is non-cacheable: tables in ordinary XNU memory (wifi51) also had the kernel's cacheable
-    // mapping, whose dirty lines from the zero fill can be written back over the entries later (the SMMU then reported a translation
-    // fault at IOVA 0xb0002000, inside the window, and HTC never came up).
-    uint64_t tbus = 0;
-    uint8_t *tva = static_cast<uint8_t *>(arenaAlloc(3 * 4096, &tbus));
-    if (!tva || ((tva - gArena.va) & 0xfff)) {logf(3, "wifi: iommu: no table pages in the window"); return false;}
-    logf(6, "wifi: iommu step: tables allocated");
-    const uint64_t tpa = gArena.pa + (uint64_t)(tva - gArena.va);
-    volatile uint64_t *t = reinterpret_cast<volatile uint64_t *>(tva);
-    logf(6, "wifi: iommu step: tables mapped at pa %llx", tpa);
-    for (unsigned i = 0; i < 3 * 512; ++i) t[i] = 0;
-    // Block attributes: AF, inner shareable, AP[2:1]=01 (read/write), MAIR index 0 (Normal non-cacheable) or 1 (Device nGnRE), block.
-    constexpr uint64_t kBlock = 1ull | 1ull << 10 | 3ull << 8 | 1ull << 6;
-    t[2] = (tpa + 4096) | 3;   // L1 index 2: 0x80000000-0xbfffffff
-    t[0] = (tpa + 8192) | 3;   // L1 index 0: 0-0x3fffffff
-    for (uint64_t off = 0; off < gArena.bytes; off += 0x200000)
-        t[512 + ((kIovaBase - 0x80000000ull + off) >> 21)] = (gArena.pa + off) | kBlock;
-    if (ownBank) {
-        constexpr uint64_t kMsiBlockIova = 0xbfe00000;  // the window's last 2 MiB
-        t[512 + ((kMsiBlockIova - 0x80000000ull) >> 21)] = (kMsiAddr & ~0x1fffffull) | kBlock | 1ull << 2;
-        gMsiIova = kMsiBlockIova | (kMsiAddr & 0x1fffff);
-        for (uint64_t pa = 0xa6400000; pa < 0xa7000000; pa += 0x200000) t[512 + ((pa - 0x80000000ull) >> 21)] = pa | kBlock;
-    } else {
-        t[1024 + (kMsiAddr >> 21)] = (kMsiAddr & ~0x1fffffull) | kBlock | 1ull << 2;
-    }
-    __asm__ volatile("dsb sy" ::: "memory");
-    const unsigned cb = (pages + bank) * 4096u;
-    const uint32_t oldSctlr = tRd(ctx, cb);
-    logf(6, "wifi: iommu step: tables written, sctlr off next");
-    tWr(ctx, cb, 0);                                      // disable while the registers change
-    logf(6, "wifi: iommu step: sctlr off, cbar/cba2r next");
-    tWr(ctx, 0x1800 + 4 * bank, 1);                       // CBA2R: AArch64 descriptors
-    logf(6, "wifi: iommu step: cba2r written, tcr2/mair/tcr/ttbr next");
-    // TCR2: 40-bit output and SEP = 7 (sign extension from the upstream bus width, as Linux's arm-smmu writes it). With SEP 0 bit 31
-    // is the sign bit: every IOVA from 0x80000000 belongs to the disabled TTBR1 half (wifi51/52: translation faults at 0xb0002000,
-    // 0xb0004000, the first rings of the window).
-    tWr(ctx, cb + 0x10, 2u | 7u << 15);
-    tWr(ctx, cb + 0x38, 0x0444u);                         // MAIR0: 0 Normal NC, 1 Device nGnRE
-    tWr(ctx, cb + 0x3c, 0);
-    tWr(ctx, cb + 0x30, 32u | 1u << 23);                  // TCR: T0SZ 32 (4 GiB), walks non-cacheable, 4 KiB granule, no TTBR1
-    tWr(ctx, cb + 0x20, (uint32_t)tpa);                   // TTBR0 (ASID 0)
-    tWr(ctx, cb + 0x24, (uint32_t)(tpa >> 32));
-    logf(6, "wifi: iommu step: ttbr written, fsr clear and tlb invalidate next");
-    tWr(ctx, cb + 0x58, tRd(ctx, cb + 0x58));          // stale faults
-    tWr(ctx, cb + 0x618, 0);                              // TLBIALL
-    tWr(ctx, cb + 0x7f0, 0);                              // TLBSYNC
-    unsigned polls = 0;
-    logf(6, "wifi: iommu: polling tlb status");
-    while ((smmuRd(ctx, cb + 0x7f4) & 1) && polls < 100000) ++polls;
-    logf(6, "wifi: iommu step: tlb invalidated (%u polls), sctlr on next", polls);
-    tWr(ctx, cb, 0x61);                                   // M, fault report and interrupt, as the boot loader had it
-    logf(6, "wifi: iommu step: sctlr on, stream 1400 next");
-    // 0x1400 into the same bank: its own group (made by an earlier run or now) or a free one, the context first, then the match.
-    int other = findSlot(ctx, kStreams[0], count);
-    if (other < 0) for (unsigned i = 0; i < count && other < 0; ++i) if (!(tRd(ctx, 0x800 + 4 * i) & 0x80000000u)) other = (int)i;
-    if (other >= 0) {tWr(ctx, 0xc00 + 4 * other, bank); tWr(ctx, 0x800 + 4 * other, 0x80000000u | kStreams[0]);}
-    gArena.iova = kIovaBase;
-    logf(6, "wifi: iommu: bank %u (sctlr %x -> %x, tlbsync %u polls), tables %llx, window %llx at iova %llx, streams in slots %d %d",
-         bank, oldSctlr, tRd(ctx, cb), polls, tpa, gArena.pa, kIovaBase, slot, other);
-    native_wlan_stats[9] = 3 | 0x10;
-    return true;
-}
 bool setupSmmu() {
-    unsigned translate = 0;  // wifi-iommu=1: bank 70 raised an SError on this phone; kept for a bank the kernel may program
-    PE_parse_boot_argn("wifi-iommu", &translate, sizeof translate);
-    if (translate) {
-        IODeviceMemory *memory = IODeviceMemory::withRange(kSmmu, kSmmuBytes);
-        IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
-        if (memory) memory->release();
-        if (!map) return false;
-        struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
-        describeStreams(io, "before");
-        PE_parse_boot_argn("wifi-iommu-pause", &gStepPause, sizeof gStepPause);
-        if (gStepPause) {logf(6, "wifi: iommu: %u ms after every step", gStepPause); stepPause();}
-        const bool ok = setupTranslation(io.ctx, translate == 2);
-        describeStreams(io, "after");
-        gSmmuMap = map;
-        // With translation on and before the module starts any DMA: the bank's fault state, so a fault from what still runs (the
-        // WPSS, the chip) shows before anything of ours uses the window.
-        for (unsigned round = 0; ok && gStepPause && round < 3; ++round) {
-            const unsigned cb = (gPages + gTransBank) * 4096u;
-            logf(6, "wifi: iommu: translation on, round %u: bank sctlr %08x fsr %08x far %08x%08x", round, smmuRd(io.ctx, cb), smmuRd(io.ctx, cb + 0x58),
-                 smmuRd(io.ctx, cb + 0x64), smmuRd(io.ctx, cb + 0x60));
-            stepPause();
-        }
-        if (ok) return true;
-        logf(3, "wifi: iommu: falling back to pass-through");
-    }
     IODeviceMemory *memory = IODeviceMemory::withRange(kSmmu, kSmmuBytes);
     IOMemoryMap *map = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
     if (memory) memory->release();
     if (!map) return false;
     struct smmu_io io = {reinterpret_cast<void *>(map->getVirtualAddress()), smmuRd, smmuWr};
     describeStreams(io, "before");
-    // wifi-smmu-delay=MS: wait MS milliseconds (logged every 10) before the streams move off the boot loader's bank 70. The
-    // translation attempts (wifi42-44) died with an SError ~1 ms after this point after only reading registers this path reads too;
-    // with nothing but a delay here, an SError means the cause is the time stream 0x1401 stays on bank 70, not our accesses.
-    unsigned hold = 0;
-    PE_parse_boot_argn("wifi-smmu-delay", &hold, sizeof hold);
-    for (unsigned waited = 0; waited < hold; waited += 10) {
-        logf(6, "wifi: smmu: %u ms on the boot loader's bank", waited);
-        IOSleep(10);
-    }
-    if (hold) logf(6, "wifi: smmu: held %u ms, moving the streams", hold);
     int32_t result = 0;
     unsigned bypassBank = ~0u;
     for (unsigned i = 0; i < 2; ++i) {
@@ -653,37 +493,6 @@ void pPoll() {
     nw_wifi_poll();
 }
 void pHalt() {for (;;) IOSleep(1000);}
-// ---- threads for a module that asks for them (nw_wifi_threads_wanted: QcacldWifi's kthreads) ----
-// One module lock; module_wait sleeps with it released (IOLockSleepDeadline: no lost wakeup against a waker that holds it).
-IOLock *gModuleLock;
-int gModuleEvent;
-void *pThreadSelf() {return current_thread();}
-struct ThreadStart {void (*fn)(void *); void *arg;};
-void threadMain(void *param, wait_result_t) {
-    ThreadStart *start = static_cast<ThreadStart *>(param);
-    const ThreadStart s = *start;
-    IOFreeType(start, ThreadStart);
-    s.fn(s.arg);
-    thread_terminate(current_thread());
-}
-int pThreadStart(void (*fn)(void *), void *arg) {
-    ThreadStart *s = IOMallocType(ThreadStart);
-    if (!s) return -12;
-    s->fn = fn; s->arg = arg;
-    thread_t thread = nullptr;
-    if (kernel_thread_start(threadMain, s, &thread) != KERN_SUCCESS) {IOFreeType(s, ThreadStart); return -35;}
-    thread_deallocate(thread);
-    return 0;
-}
-void pThreadExit() {thread_terminate(current_thread()); for (;;) IOSleep(1000);}
-void pModuleLock() {IOLockLock(gModuleLock);}
-void pModuleUnlock() {IOLockUnlock(gModuleLock);}
-void pModuleWait(unsigned ms) {
-    uint64_t deadline = 0;
-    clock_interval_to_deadline(ms ? ms : 1, kMillisecondScale, &deadline);
-    IOLockSleepDeadline(gModuleLock, &gModuleEvent, deadline, THREAD_UNINT);
-}
-void pModuleWake() {IOLockWakeup(gModuleLock, &gModuleEvent, false); wakeWorker();}
 void *hAlloc(size_t n) {
     uint8_t *p = static_cast<uint8_t *>(IOMallocData(n + 16));
     if (!p) return nullptr;
@@ -716,6 +525,19 @@ bool boardMac(uint8_t m[6]) {
     for (unsigned i = 0; i < 6; ++i) m[i] = (uint8_t)(h >> (8 * i));
     m[0] = (uint8_t)((m[0] & 0xfe) | 0x02);
     return true;
+}
+// The system's own record of the Wi-Fi address, as a boot loader leaves it in the device tree (sheng 3e679fb): MobileGestalt's WifiAddress and
+// WifiAddressData come from /chosen/mac-address-wifi0 and /arm-io/wlan local-mac-address. Without them Settings has no Wi-Fi address and
+// the wireless daemon aborts every join that needs a private address. replace: en0's own address once the module reports it.
+void publishMac(const uint8_t m[6], bool replace) {
+    if (IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane)) {
+        if (replace || !chosen->getProperty("mac-address-wifi0")) chosen->setProperty("mac-address-wifi0", const_cast<uint8_t *>(m), 6);
+        chosen->release();
+    }
+    if (IORegistryEntry *wlan = IORegistryEntry::fromPath("/arm-io/wlan", gIODTPlane)) {
+        if (replace || !wlan->getProperty("local-mac-address")) wlan->setProperty("local-mac-address", const_cast<uint8_t *>(m), 6);
+        wlan->release();
+    }
 }
 
 // Firmware files by name, each read once and kept for the boot. ath11k asks for board-2.bin, then bdwlan.b<board id> (the vendor's name,
@@ -932,41 +754,6 @@ extern "C" int asteroids_wifi_join_read(uint8_t **data, size_t *size);
 volatile int gConnectDone = -1;
 void connectDone(int result) {gConnectDone = result; wakeWorker();}
 struct Join {char ssid[33]; char key[65]; size_t ssidLen, keyLen; bool loaded, gaveUp; unsigned rounds; uint64_t next;} gJoin;
-// wifi-dhcp-probe=1: once the station is up, the board sends a DHCP Discover itself (broadcast, from the station's address) through the
-// module, three times 3 s apart. The server's Offer comes back through the receive path to en0, where WifiNet logs DHCP frames ("wifi-net:
-// dhcp in type 2 ... yiaddr"): transmit and receive of real IP traffic without the system's DHCP client (which needs SpringBoard's join).
-struct DhcpProbe {unsigned sent; uint64_t next;} gDhcp;
-void dhcpProbe() {
-    unsigned want = 0;
-    PE_parse_boot_argn("wifi-dhcp-probe", &want, sizeof want);
-    if (!want || gDhcp.sent >= 3 || pNow() < gDhcp.next) return;
-    struct nw_wifi_status st;
-    nw_wifi_status_get(&st);
-    if (st.state != NW_STA_UP) return;
-    uint8_t f[14 + 20 + 8 + 300] = {};
-    uint8_t *e = f, *ip = f + 14, *udp = ip + 20, *b = udp + 8;
-    memset(e, 0xff, 6); memcpy(e + 6, st.mac, 6); e[12] = 0x08; e[13] = 0x00;
-    const uint32_t xid = 0x75580000u | gDhcp.sent;
-    b[0] = 1; b[1] = 1; b[2] = 6;                                            // BOOTREQUEST, Ethernet, 6-byte address
-    b[4] = xid >> 24; b[5] = xid >> 16; b[6] = xid >> 8; b[7] = xid;
-    b[10] = 0x80;                                                            // broadcast reply
-    memcpy(b + 28, st.mac, 6);                                               // chaddr
-    b[236] = 0x63; b[237] = 0x82; b[238] = 0x53; b[239] = 0x63;              // magic cookie
-    const uint8_t opts[] = {53, 1, 1, 61, 7, 1, st.mac[0], st.mac[1], st.mac[2], st.mac[3], st.mac[4], st.mac[5], 55, 3, 1, 3, 6, 255};
-    memcpy(b + 240, opts, sizeof opts);
-    const uint16_t udpLen = 8 + 300, ipLen = 20 + udpLen;
-    udp[0] = 0; udp[1] = 68; udp[2] = 0; udp[3] = 67; udp[4] = udpLen >> 8; udp[5] = udpLen & 0xff;   // checksum 0: none
-    ip[0] = 0x45; ip[2] = ipLen >> 8; ip[3] = ipLen & 0xff; ip[8] = 64; ip[9] = 17;
-    memset(ip + 16, 0xff, 4);
-    uint32_t sum = 0;
-    for (int i = 0; i < 20; i += 2) sum += (uint32_t)ip[i] << 8 | ip[i + 1];
-    while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
-    ip[10] = (uint8_t)(~sum >> 8); ip[11] = (uint8_t)~sum;
-    const int r = nw_wifi_tx(f, sizeof f);
-    logf(6, "wifi: dhcp probe %u: Discover xid %08x sent: %d", gDhcp.sent, xid, r);
-    ++gDhcp.sent; gDhcp.next = pNow() + 3000;
-    wakeWorker();
-}
 bool gNetStarted;
 void netStart() {
     struct nw_wifi_status status;
@@ -976,6 +763,12 @@ void netStart() {
         return;
     }
     gNetStarted = true;
+    static const uint8_t zero[6] = {};
+    uint8_t board[6];
+    if (memcmp(status.mac, zero, 6) && !(boardMac(board) && !memcmp(board, status.mac, 6))) {
+        publishMac(status.mac, true);
+        logf(5, "wifi: en0's address is not the board address; the device tree now carries en0's");
+    }
     sheng_wifi_net_start(status.mac);
 }
 void joinStep() {
@@ -1013,53 +806,19 @@ void joinStep() {
 // ---- the self-test scan: the networks the radio hears go to the log ----
 volatile int gScanDone;
 void scanDone() {gScanDone = 1; wakeWorker();}
-// The firmware's MHI state words (icnss2 icnss_get_mhi_state / icnss_is_pci_ep_awake: the WPSS-chip link state at +0, the endpoint awake
-// word at +4), mapped once the QMI device information named them; -1 before.
-volatile uint32_t *mhiWords() {
-    static volatile uint32_t *words;
-    static IOMemoryMap *keep;
-    static uint64_t mapped;
-    const uint64_t pa = nw_wifi_mhi_pa;
-    if (!pa || (pa & 3) || pa == mapped) return words;
-    unsigned allowed = 1;  // wifi-mhi=0: never map them
-    PE_parse_boot_argn("wifi-mhi", &allowed, sizeof allowed);
-    if (!allowed) return nullptr;
-    mapped = pa;
-    volatile uint32_t *page = mapRegs(pa & ~0xfffull, 0x1000, &keep);
-    words = page ? page + (pa & 0xfff) / 4 : nullptr;
-    logf(6, "wifi: mhi state words at %llx (size %x): %s", pa, nw_wifi_mhi_size, words ? "mapped" : "map failed");
-    if (words) logMapping("mhi state words", words);
-    return words;
-}
-int64_t mhiWord(unsigned index) {
-    volatile uint32_t *w = mhiWords();
-    return w && (index * 4 + 4 <= (nw_wifi_mhi_size ? nw_wifi_mhi_size : 8)) ? (int64_t)w[index] : -1;
-}
-void logSmp2p(const char *when) {
-    char text[480];
-    asteroids_wpss_smp2p_dump(text, sizeof text);
-    // log lines hold about 100 characters
-    const size_t n = strlen(text);
-    for (size_t at = 0, part = 0; at < n; at += 80, ++part) {
-        char piece[81];
-        strlcpy(piece, text + at, sizeof piece);
-        logf(6, "wifi: smp2p %s %zu: %s", when, part, piece);
-    }
-}
 // icnss2's SoC wake handshake (main.c icnss_send_smp2p + fw_soc_wake_ack_handler): the message (4 request, 5 release, sequence << 16) on
 // the outbound "wlan_soc_wake" entry, then the firmware acknowledges by flipping bit 0 of its inbound "wlan_soc_wake" entry (the
 // qcom,smp2p-soc-wake-ack interrupt, either edge) within SMP2P_SOC_WAKE_TIMEOUT, 500 ms. Returns the milliseconds to the ack, -60
 // without one.
 int socWake(uint32_t message) {
     const int32_t before = asteroids_wpss_soc_wake_in();
-    const int64_t link = mhiWord(0), awake = mhiWord(1);
     const uint64_t start = pNow();
     const int32_t sent = asteroids_wpss_smp2p_send(1, message);
     int32_t now = before;
     while (pNow() - start < 500 && (now = asteroids_wpss_soc_wake_in()) == before) IOSleep(1);
     const int ms = now != before ? (int)(pNow() - start) : -60;
-    logf(ms >= 0 ? 6 : 3, "wifi: soc wake %s %x: in %x -> %x, %s %d ms; mhi %lld/%lld -> %lld/%lld", message == 4 ? "req" : "rel",
-         sent, before, now, ms >= 0 ? "ack after" : "no ack in", ms >= 0 ? ms : 500, link, awake, mhiWord(0), mhiWord(1));
+    logf(ms >= 0 ? 6 : 3, "wifi: soc wake %s %x: in %x -> %x, %s %d ms", message == 4 ? "req" : "rel", sent, before, now,
+         ms >= 0 ? "ack after" : "no ack in", ms >= 0 ? ms : 500);
     return ms;
 }
 
@@ -1084,108 +843,10 @@ void logNetworks() {
     IOFreeData(bss, sizeof(struct nw_bss_info));
 }
 
-// ---- the post-mortem of the WLAN firmware (wifi-postmortem=1) ----
-// The firmware asserts in whal_recv.c whalRxMpduPop:6920 when a receive ring entry names the same buffer as the entry before it (see
-// the notes: ring pop 0x14ccd0 with 32-byte entries; each ring's context in a table of 64 at 0xc06b6b44, the last entry at +0x94 and
-// the last buffer's address (firmware virtual) at +0x210; DMA addresses become virtual through 21 regions of 0x28 bytes at 0xc0b73f88:
-// virtual address +0, DMA base +8 (64-bit), size +0x10). After the PAS shutdown hands the carveout back, this reads those: the regions,
-// every ring context, the entries around each ring's last one and the buffer it named, in four rounds (the log keeps 100 lines a slot).
-struct PmRegion {uint32_t va, size; uint64_t base;};
-PmRegion gPmRegions[21];
-struct PmRing {unsigned id; uint32_t ctx, entry, buffer;};
-PmRing gPmRings[8];
-unsigned gPmRingCount;
-// Reads words at a firmware virtual address: the image's own segments, else through the regions (a DMA address in the carveout, or in
-// this side's DMA window).
-bool pmRead(uint32_t va, uint32_t *out, uint32_t words) {
-    if (!asteroids_wpss_pm_read(va, 0, out, words)) return true;
-    for (const PmRegion &r : gPmRegions) {
-        if (!r.size || va < r.va || va - r.va + 4ull * words > r.size) continue;
-        const uint64_t dma = r.base + (va - r.va);
-        if (!asteroids_wpss_pm_read(dma, 1, out, words)) return true;
-        if (gArena.va && dma >= gArena.iova && dma + 4ull * words <= gArena.iova + gArena.bytes && !(dma & 3)) {
-            const volatile uint32_t *from = reinterpret_cast<const volatile uint32_t *>(gArena.va + (dma - gArena.iova));
-            for (uint32_t k = 0; k < words; ++k) out[k] = from[k];
-            return true;
-        }
-        return false;
-    }
-    return false;
-}
-// Which region holds a DMA address (the entries' buffer addresses), as the firmware's virtual address; 0xdeadc0d1 like the firmware.
-uint32_t pmVirtual(uint64_t dma) {
-    for (const PmRegion &r : gPmRegions) if (r.size && dma >= r.base && dma - r.base < r.size) return r.va + (uint32_t)(dma - r.base);
-    return 0xdeadc0d1u;
-}
-void pmWords(const char *what, uint32_t va, unsigned words) {
-    uint32_t w[6];
-    for (unsigned at = 0; at < words; at += 6) {
-        const unsigned n = words - at < 6 ? words - at : 6;
-        if (!pmRead(va + 4 * at, w, n)) {logf(4, "wifi: pm %s %x: not readable", what, va + 4 * at); return;}
-        char line[96]; int k = 0;
-        for (unsigned i = 0; i < n; ++i) k += snprintf(line + k, sizeof line - k, " %08x", w[i]);
-        logf(6, "wifi: pm %s %x:%s", what, va + 4 * at, line);
-    }
-}
-// One round; returns false when there is nothing more.
-bool pmRound(unsigned round) {
-    if (round == 0) {
-        nw_wifi_idle_check("after the fatal error");
-        uint32_t w[21 * 10];
-        if (asteroids_wpss_pm_read(0xc0b73f88u, 0, w, 21 * 10)) {logf(3, "wifi: pm regions not readable"); return false;}
-        for (unsigned i = 0; i < 21; ++i) {
-            const uint32_t *e = w + 10 * i;
-            gPmRegions[i] = {e[0], e[4], (uint64_t)e[2] | (uint64_t)e[3] << 32};
-            if (e[4]) logf(6, "wifi: pm region %u: va %08x dma %llx size %x | %08x %08x %08x", i, e[0],
-                           (unsigned long long)gPmRegions[i].base, e[4], e[1], e[5], e[6]);
-        }
-        return true;
-    }
-    if (round == 1) {
-        uint32_t table[64];
-        if (asteroids_wpss_pm_read(0xc06b6b44u, 0, table, 64)) {logf(3, "wifi: pm ring table not readable"); return false;}
-        unsigned shown = 0;
-        for (unsigned id = 0; id < 64; ++id) {
-            if (!table[id]) continue;
-            uint32_t last = 0, buffer = 0, count = 0;
-            const bool ok = pmRead(table[id] + 0x94, &last, 1) && pmRead(table[id] + 0x210, &buffer, 1);
-            pmRead(table[id] + 0x108, &count, 1);
-            if (shown++ < 40) logf(6, "wifi: pm ring %u ctx %08x: last entry %08x buffer %08x count %x%s", id, table[id], last, buffer, count,
-                                   ok ? "" : " (not readable)");
-            if (ok && last && buffer && gPmRingCount < 8) gPmRings[gPmRingCount++] = {id, table[id], last, buffer};
-        }
-        logf(6, "wifi: pm %u ring contexts, %u with a last entry", shown, gPmRingCount);
-        return gPmRingCount != 0;
-    }
-    if (round == 2) {
-        // the entries around the last popped one (32 bytes each): 4 before, it, 3 after; the first two words are the buffer's DMA address
-        for (unsigned r = 0; r < gPmRingCount && r < 4; ++r) {
-            const PmRing &ring = gPmRings[r];
-            for (int k = -4; k <= 3; ++k) {
-                const uint32_t at = ring.entry + 32 * k;
-                uint32_t e[8];
-                if (!pmRead(at, e, 8)) {logf(4, "wifi: pm ring %u entry %x: not readable", ring.id, at); continue;}
-                logf(6, "wifi: pm ring %u entry %+d %x: %08x %08x>%08x %08x %08x", ring.id, k, at, e[0], e[1],
-                     pmVirtual((uint64_t)e[0] | (uint64_t)(e[1] & 0xff) << 32), e[2], e[3]);
-                logf(6, "wifi: pm ring %u entry %+d %x: .. %08x %08x %08x %08x", ring.id, k, at, e[4], e[5], e[6], e[7]);
-            }
-        }
-        return true;
-    }
-    if (round == 3) {
-        for (unsigned r = 0; r < gPmRingCount && r < 4; ++r) {
-            char what[24];
-            snprintf(what, sizeof what, "ring %u buffer", gPmRings[r].id);
-            pmWords(what, gPmRings[r].buffer, 32);
-        }
-        return false;
-    }
-    return false;
-}
-
 void wifiThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "wifi");
     stage(StThread);
+    if (uint8_t m[6]; boardMac(m)) publishMac(m, false);
     // The WPSS comes up on the ADSP thread once the firmware partition is readable: wait for its "ready" (up to three minutes).
     for (unsigned waited = 0; native_wpss_stats[0] < 7; waited += 250) {
         if (native_wpss_stats[0] < 0 || waited >= 180000) {fail(StWpss, native_wpss_stats[0]); return;}
@@ -1207,21 +868,6 @@ void wifiThread(void *, wait_result_t) {
     if (asteroids_remote::smem().base) logMapping("SMEM (SMP2P, GLINK)", asteroids_remote::smem().base);
     if (!setupSmmu()) {fail(StSmmu, native_wlan_stats[9]); return;}
     stage(StSmmu);
-    // icnss2's host capability ddr_range: the DMA window as the chip addresses it, the WLAN MSA region (stock devicetree
-    // wlan_msa_region@a6400000, 12 MiB) and the MSI doorbell's page (icnss2 maps it into its IOVA window; with ranges the firmware
-    // rejects chip writes outside them). Off by default: with these ranges the firmware reported an invalid PCIe write before HTT
-    // connected (wifi33/34). wifi-ddr=1 sends them, wifi-ddr=2 widens the first range to 4 GiB.
-    unsigned ddr = 0;
-    PE_parse_boot_argn("wifi-ddr", &ddr, sizeof ddr);
-    if (ddr) {
-        nw_wifi_ddr_range[0] = gArena.iova; nw_wifi_ddr_range[1] = gArena.bytes;
-        // wifi-ddr=2: the whole 32-bit space as the first range (to bisect what the firmware rejects).
-        if (ddr == 2) {nw_wifi_ddr_range[0] = 0; nw_wifi_ddr_range[1] = 0x100000000ull;}
-        nw_wifi_ddr_range[2] = 0xa6400000; nw_wifi_ddr_range[3] = 0xc00000;
-        nw_wifi_ddr_range[4] = kMsiAddr & ~0xfffull; nw_wifi_ddr_range[5] = 0x1000;
-        // The translated layout (wifi-iommu=2) is icnss2's: one IOVA window that holds the DMA memory and the MSI doorbell, then the MSA.
-        if (gMsiIova) {nw_wifi_ddr_range[0] = kIovaBase; nw_wifi_ddr_range[1] = 0x10000000; nw_wifi_ddr_range[4] = 0; nw_wifi_ddr_range[5] = 0;}
-    }
     stage(StDma);
     PE_parse_boot_argn("wifi-power", &gSupplies, sizeof gSupplies);
     if (gSupplies) {
@@ -1233,63 +879,23 @@ void wifiThread(void *, wait_result_t) {
     static const struct lx_platform plat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync, pFwGet,
                                             pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption,
                                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};   // one executor
-    static const struct lx_platform threadedPlat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync,
-                                                    pFwGet, pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption,
-                                                    pThreadSelf, pThreadStart, pThreadExit, pModuleLock, pModuleUnlock,
-                                                    pModuleWait, pModuleWake};
-    const bool threads = nw_wifi_threads_wanted() != 0;
-    if (threads && !gModuleLock) gModuleLock = IOLockAlloc();
-    nw_wifi_set_platform(threads && gModuleLock ? &threadedPlat : &plat);
-    if (threads) logf(6, "wifi: module threads %s", gModuleLock ? "on" : "unavailable (no lock)");
+    nw_wifi_set_platform(&plat);
     static struct nw_board board;
     board.irq_base = kIrqBase;
     board.map_phys = pMapPhys;
-    board.msi_addr = gMsiIova ? gMsiIova : kMsiAddr;
+    board.msi_addr = kMsiAddr;
     board.msi_spi_first = kMsiSpi;
     board.msi_count = kMsiCount;
     board.qrtr_send = pQrtrSend;
     board.rproc_up = pRprocUp;
     board.smp2p_wlan = pSmp2pWlan;
     board.cpr_voltage = pCprVoltage;
-    board.smp2p_send = asteroids_wpss_smp2p_send;
-    board.soc_wake_in = asteroids_wpss_soc_wake_in;
     unsigned wmiMem = 1;  // wifi-wmi-mem=0: only log the firmware's host memory requests
     PE_parse_boot_argn("wifi-wmi-mem", &wmiMem, sizeof wmiMem);
     nw_wifi_wmi_mem = wmiMem;
-    // wifi-wmi-vendor=MASK: the vendor host's WMI_INIT values (1 Ethernet rx decap, 2 peers/TIDs, 4 flag1, 8 flags2), 0 ath11k's.
-    unsigned wmiVendor = 0;
-    PE_parse_boot_argn("wifi-wmi-vendor", &wmiVendor, sizeof wmiVendor);
-    nw_wifi_wmi_vendor = wmiVendor;
-    // wifi-fse=MASK: the vendor host's flow search engine setup after the rings (1 FSE setup, 2 FISA config, 4 table in CMEM), 0 none.
-    unsigned fse = 0;
-    PE_parse_boot_argn("wifi-fse", &fse, sizeof fse);
-    nw_wifi_fse = fse;
-    // wifi-dp-vendor=MASK: the vendor host's data path (1 no PPDU stats request, 2 REO routing registers, 4 ring selection/FSE after
-    // all rings, 8 no per-vdev decap/encap, 16 vendor idle WBM/REO state, 32 all differing vendor REO/WBM/TCL config, 64 14-word HTT
-    // SRING_SETUP as the vendor sends it), 0 ath11k's.
-    unsigned dpVendor = 0;
-    PE_parse_boot_argn("wifi-dp-vendor", &dpVendor, sizeof dpVendor);
-    nw_wifi_dp_vendor = dpVendor;
-    unsigned fwlogEarly = 0;  // wifi-fwlog: also the firmware log levels before the ring setup
-    PE_parse_boot_argn("wifi-fwlog", &fwlogEarly, sizeof fwlogEarly);
-    nw_wifi_fw_log_early_on = fwlogEarly;
-    unsigned idlePs = 0;  // wifi-idle-ps=1: the firmware may enter IMPS between scans (WMI_PDEV_PARAM_IDLE_PS_CONFIG 1)
+    unsigned idlePs = 1;  // wifi-idle-ps=0: the firmware never enters IMPS between scans (WMI_PDEV_PARAM_IDLE_PS_CONFIG 0)
     PE_parse_boot_argn("wifi-idle-ps", &idlePs, sizeof idlePs);
     nw_wifi_idle_ps = idlePs;
-    // wifi-qmi-vendor=MASK: 1 host_build_type, 2 ddr_type (wifi-ddr-type, default 7 = LPDDR4X, the 3a's /memory ddr_device_type),
-    // 4 no mem_cfg_mode, 8 no 11D offload scan, 16 data stall detection; 0 ath11k's.
-    unsigned qmiVendor = 0, ddrType = 7;
-    PE_parse_boot_argn("wifi-qmi-vendor", &qmiVendor, sizeof qmiVendor);
-    PE_parse_boot_argn("wifi-ddr-type", &ddrType, sizeof ddrType);
-    nw_wifi_qmi_vendor = qmiVendor;
-    nw_wifi_ddr_type = ddrType;
-    // wifi-dp-poll=MS: the module's polled data path groups (REO, WBM, RXDMA rings: register reads and tail pointer writes into the
-    // chip) every MS milliseconds instead of every round; the vendor host touches those registers only on an interrupt and under a
-    // wake vote. The copy engines (WMI, HTT) are still polled every round.
-    unsigned dpPoll = 0;
-    PE_parse_boot_argn("wifi-dp-poll", &dpPoll, sizeof dpPoll);
-    nw_wifi_data_path_poll(dpPoll);
-    if (dpPoll) logf(6, "wifi: data path groups polled every %u ms", dpPoll);
     PE_parse_boot_argn("wifi-debug", &board.debug_mask, sizeof board.debug_mask);  // ath11k's ATH11K_DBG_* bits
     static const struct nw_wifi_events events = {scanDone, connectDone, nullptr, nullptr, nullptr, nullptr, nullptr};
     nw_wifi_set_events(&events);
@@ -1315,13 +921,9 @@ void wifiThread(void *, wait_result_t) {
     PE_parse_boot_argn("wifi-scan", &selfScan, sizeof selfScan);
     PE_parse_boot_argn("wifi-aj", &autoJoin, sizeof autoJoin);
     bool powered = false, scanAsked = false;
-    uint64_t scanAt = 0, nextStageAt = 0;
-    uint64_t scanStartedAt = 0;  // when the board started the first scan (wifi-regdump)
-    unsigned scanStage = 0;
-    unsigned fwdLeft = 0, idleDumps = 0;
-    uint64_t radioAt = 0;
+    uint64_t scanAt = 0;
+    unsigned fwdLeft = 0;
     uint64_t fwdAt = 0;
-    bool fwdEarly = false;
     uint64_t nextFaults = 0, nextLoad = pNow() + 30000, loadRounds = 0;
     int32_t loadIrqs = native_wlan_stats[2];
     for (uint64_t n = 0;; ++n) {
@@ -1337,39 +939,15 @@ void wifiThread(void *, wait_result_t) {
         if (!powered && nw_wifi_stats.stage >= 4) {
             // As icnss2 around every ring pointer write of the vendor host (hal_srng delayed register writes: prevent L1, i.e. leave the
             // WPSS-chip link's power save, and a SoC wake vote): asked once and held (wifi-awake=0 skips). Without them the firmware
-            // asserted in whalRecvDmaLeakRecovery/Detect at the first scan.
+            // asserted in whalRecvDmaLeakRecovery/Detect at the first scan. Giving both back after each access, as icnss2 does, kept the
+            // MAC from leaving IMPS (whal_wmac_transition_to_fw_control:1734).
             unsigned awake = 1;
             PE_parse_boot_argn("wifi-awake", &awake, sizeof awake);
             if (awake) {
-                nw_wifi_reg_check("before the votes");
-                {int32_t v[3]; const int voted = asteroids_wpss_vrm(v); if (voted) logf(6, "wifi: supply votes smpb3 %d smpb1 %d smpb2 %d", v[0], v[1], v[2]);}
-            }
-            // The qcacld module (it wants threads) sends the SoC wake / EP power save messages itself through its icnss backend
-            // (nw_board.smp2p_send, with icnss2's sequence numbers): the board's own handshake is for ath11k only.
-            if (awake && !threads) {
-                logSmp2p("before");
                 const int32_t ep = asteroids_wpss_smp2p_send(2, 7);
                 logf(6, "wifi: ep power save exit %x", ep);
-                const int ack = socWake(4);
-                // wifi-awake=2: when the first request goes unanswered, a release and a second request (an ack is a flip, so a lost first
-                // edge would show on the next one).
-                if (ack < 0 && awake == 2) {socWake(5); socWake(4);}
-                logSmp2p("after");
-                // wifi-awake=3: then give both back at once, as icnss2/the vendor HIF do after each access (pld_allow_l1: EP power save
-                // enter; icnss_force_wake_release: SoC wake release), so the link to the chip may leave L0 and the firmware may sleep
-                // (IMPS): with both held the MAC never came back from IMPS (whal_wmac_transition_to_fw_control:1734, a power-up
-                // handshake bit that never set).
-                if (awake == 3) {
-                    const int32_t enter = asteroids_wpss_smp2p_send(2, 6);
-                    const int rel = socWake(5);
-                    logf(6, "wifi: ep power save enter %x, soc wake release %d", enter, rel);
-                    logSmp2p("released");
-                }
+                socWake(4);
             }
-            // wifi-fwlog=1: the firmware's receive and MAC modules log verbosely (see nw_wifi_fw_log_verbose).
-            unsigned fwlog = 0;
-            PE_parse_boot_argn("wifi-fwlog", &fwlog, sizeof fwlog);
-            if (fwlog) nw_wifi_fw_log_verbose();
             powered = true;
             stage(StInterface);
             nw_wifi_power(1);
@@ -1377,128 +955,30 @@ void wifiThread(void *, wait_result_t) {
             unsigned net = 1;
             PE_parse_boot_argn("wifi-net", &net, sizeof net);
             if (net) netStart();
-            // wifi-scan-delay=N: the self-test scan N seconds after radio on instead of 2 (the firmware died 22.1 s after radio on and
-            // 2.1 s after the scan's start in every boot, the scan always starting at 20.0 s: this tells the two apart), with the
-            // firmware's log dumped at 25 s and 35 s.
-            unsigned scanDelay = 2;
-            PE_parse_boot_argn("wifi-scan-delay", &scanDelay, sizeof scanDelay);
-            scanAt = pNow() + 1000ull * scanDelay;
-            radioAt = pNow();
-            idleDumps = scanDelay > 30 ? 2 : 0;
+            scanAt = pNow() + 2000;   // the self-test scan 2 s after radio on
         }
         // The moment the WPSS reports a fatal error, in this log's time (the [wpss] rows are sampled every 2 s).
         static bool wpssDead;
         if (!wpssDead && native_wpss_stats[3] > 0 && (native_wpss_stats[3] & 1)) {
             wpssDead = true;
-            logf(3, "wifi: WPSS fatal (slave %x), scan stage %u", native_wpss_stats[3], scanStage);
-            nw_wifi_rx_buf_probe(1);
+            logf(3, "wifi: WPSS fatal (slave %x)", native_wpss_stats[3]);
             fwdLeft = 240; fwdAt = pNow();
         }
-        // The firmware's last diag records after it died (and once 15 s after radio on, to see what a healthy stretch logs): 80 a
-        // round, oldest first, a round every 2.5 s (the log takes 100 lines a slot).
-        if (powered && !fwdEarly && pNow() >= scanAt + 13000 - 2000 && !wpssDead) {fwdEarly = true; nw_fw_diag_dump(0, 60);}
-        // (The firmware's records of the host's receive setup are logged as they arrive: nw_debug.c nw_fw_diag.)
-        if (powered && idleDumps && !wpssDead && pNow() >= radioAt + (idleDumps == 2 ? 25000 : 35000)) {
-            --idleDumps;
-            logf(6, "wifi: %llu s after radio on, WPSS slave %x", (pNow() - radioAt) / 1000, native_wpss_stats[3]);
-            nw_fw_diag_dump(0, 90);
-        }
+        // The firmware's last diag records after it died: 80 a round, oldest first, a round every 2.5 s (the log takes 100 lines a slot).
         if (fwdLeft && pNow() >= fwdAt) {
             fwdLeft -= 80;
             nw_fw_diag_dump(fwdLeft, 80);
             fwdAt = pNow() + 2500;
         }
-        // wifi-fwlog: the WMI commands the firmware logged receiving, 40 a round every 2.5 s, once the diag records are out after a fatal
-        // error (or 25 s after the scan started without one), to diff with the vendor host's stream.
-        static int wmiFrom = -2;
-        static uint64_t wmiAt;
-        if (nw_wifi_fw_log_early_on && wmiFrom == -2 && scanAsked && !fwdLeft && pNow() >= fwdAt + 2500 && (wpssDead || pNow() >= scanStartedAt + 25000)) {
-            wmiFrom = 0; wmiAt = pNow();
-        }
-        if (wmiFrom >= 0 && pNow() >= wmiAt) {
-            const int next = nw_fw_wmi_dump(wmiFrom, 40);
-            wmiFrom = next ? next : -1;
-            wmiAt = pNow() + 2500;
-        }
-        // wifi-postmortem=1: once the diag records are out, the firmware's receive ring state from its memory (pmRound), a round each 2.5 s.
-        static unsigned postmortem = 2;
-        if (postmortem == 2) {postmortem = 0; PE_parse_boot_argn("wifi-postmortem", &postmortem, sizeof postmortem);}
-        static int pmRoundNext = -1;
-        static uint64_t pmAt;
-        if (postmortem && wpssDead && !fwdLeft && pmRoundNext < 0 && pNow() >= fwdAt) {
-            pmRoundNext = 0; pmAt = pNow() + 2500;
-            logf(6, "wifi: pm carveout asked: %d", asteroids_wpss_postmortem());
-        }
-        if (pmRoundNext >= 0 && pmRoundNext < 8 && pNow() >= pmAt) {
-            pmAt = pNow() + 2500;
-            const int state = asteroids_wpss_postmortem();
-            if (state != 2) {logf(state < 0 ? 3 : 6, "wifi: pm carveout state %d", state); if (state < 0) pmRoundNext = 8;}
-            else pmRoundNext = pmRound((unsigned)pmRoundNext) ? pmRoundNext + 1 : 8;
-        }
-        // wifi-scan=2: the scan in three parts (2.4 GHz, 5 GHz without radar detection, 5 GHz radar channels), 3 s apart, to see which
-        // the firmware does not survive.
-        if (powered && selfScan == 2 && scanAsked && scanStage && scanStage < 3 && nextStageAt && pNow() >= nextStageAt) {
-            nextStageAt = 0;
-            nw_wifi_scan_mask = 1u << scanStage++;
-            const int s = nw_wifi_self_scan();
-            native_wlan_stats[11] = native_wlan_stats[11] + 1;
-            if (s) logf(3, "wifi: scan part %u refused: %d", scanStage, s);
-        }
         if (powered && selfScan && !scanAsked && pNow() >= scanAt) {
             scanAsked = true;
-            if (selfScan == 2) {nw_wifi_scan_mask = 1; scanStage = 1;}
-            nw_wifi_rx_buf_probe(0);  // which receive buffers the chip writes from here on
-            nw_wifi_reg_check("before the scan");
-            if (nw_wifi_dp_vendor & 16) nw_wifi_vendor_regs("before the scan");
-            if (nw_wifi_dp_vendor & 32) nw_wifi_vendor_config("before the scan");
-            nw_wifi_idle_check("before the scan");
-            scanStartedAt = pNow();
             // The mainline scan request only notifies the control client (wpa_supplicant does the scanning); without one the board starts it.
             const int s = nw_wifi_self_scan();
             native_wlan_stats[11] = native_wlan_stats[11] + 1;
             if (s) logf(3, "wifi: scan refused: %d", s);
         }
-        // wifi-regdump=1: the data-path registers for the diff against the vendor stack (scripts/diff-wcn-regs.py): snapshot 0 five
-        // seconds after radio on (idle), snapshot 1 0.3 s after the scan starts (the firmware dies 0.5-2 s in); logged 30 lines every
-        // 2.5 s (the log keeps 100 lines a 2 s slot), slot 1 once the firmware's diag records are out.
-        static unsigned regDump = 2;
-        if (regDump == 2) {regDump = 0; PE_parse_boot_argn("wifi-regdump", &regDump, sizeof regDump);}
-        static bool snap0, snap1;
-        static int regFrom[2] = {-1, -1};
-        static uint64_t regLogAt;
-        static bool vendorRegs;  // wifi-dp-vendor bit 16: the vendor's idle WBM/REO state, 3 s after radio on and before the scan
-        if ((nw_wifi_dp_vendor & 16) && powered && !vendorRegs && scanAt && pNow() + 17000 >= scanAt) {vendorRegs = true; nw_wifi_vendor_regs("after radio on");}
-        static bool vendorCfg;  // wifi-dp-vendor bit 32: every differing vendor REO/WBM/TCL config value, same two moments
-        if ((nw_wifi_dp_vendor & 32) && powered && !vendorCfg && scanAt && pNow() + 17000 >= scanAt) {vendorCfg = true; nw_wifi_vendor_config("after radio on");}
-        if (regDump && powered && radioAt && !snap0 && pNow() >= radioAt + 5000) {snap0 = true; nw_wifi_reg_snapshot(0); regFrom[0] = 0;}
-        if (regDump && scanAsked && !snap1 && pNow() >= scanStartedAt + 300) {snap1 = true; nw_wifi_reg_snapshot(1); regFrom[1] = 0;}
-        if (regDump && pNow() >= regLogAt) {
-            const int slot = regFrom[0] >= 0 ? 0 : (regFrom[1] >= 0 && !fwdLeft) ? 1 : -1;
-            if (slot >= 0) {
-                const int next = nw_wifi_reg_log(slot, regFrom[slot], 30);
-                regFrom[slot] = next ? next : -1;
-                regLogAt = pNow() + 2500;
-            }
-        }
         if (gScanDone) {
             gScanDone = 0; logNetworks(); stage(StScanned);
-            nw_wifi_rx_buf_probe(1);
-            if (selfScan == 2) {logf(6, "wifi: scan part %u done", scanStage); nextStageAt = pNow() + 3000;}
-        }
-        // The receive rings every 2 s for the first 90 s with the radio on (the firmware asserted in its receive DMA leak check around the
-        // first scan's end).
-        static uint64_t nextRings, ringsUntil;
-        if (powered && !ringsUntil) ringsUntil = pNow() + 90000;
-        if (powered && pNow() < ringsUntil && pNow() >= nextRings) {
-            nextRings = pNow() + 2000;
-            char rings[160]; nw_wifi_rx_state(rings, sizeof rings);
-            if (rings[0]) logf(6, "wifi: rings %s", rings);
-            static int64_t lastWake = -2, lastLink = -2, lastAwake = -2;
-            const int64_t wake = asteroids_wpss_soc_wake_in(), link = mhiWord(0), up = mhiWord(1);
-            if (wake != lastWake || link != lastLink || up != lastAwake) {
-                lastWake = wake; lastLink = link; lastAwake = up;
-                logf(6, "wifi: soc wake in %llx, mhi state %lld, ep awake %lld", wake, link, up);
-            }
         }
         if (gConnectDone >= 0) {
             struct nw_wifi_status st; nw_wifi_status_get(&st);
@@ -1507,7 +987,6 @@ void wifiThread(void *, wait_result_t) {
             gConnectDone = -1;
         }
         if (autoJoin && powered && scanAsked && !gNetStarted) joinStep();   // with the network side, WifiNet joins (wifi-aj)
-        if (powered) dhcpProbe();
         if (!busy) {
             const unsigned wait = nw_wifi_wait_ms(gIrqs ? 1000 : 1);
             if (wait) waitWork(wait);

@@ -62,7 +62,6 @@ void note(const char *prefix, const char *text) {
     native_wpss_text[at] = 0;
 }
 
-int32_t gVrm[4];  // wifi-vrm: the three votes' results, [3] set once voted (asteroids_wpss_vrm)
 unsigned gMode;
 QcomSmemPartition gPart;
 bool gHavePart;
@@ -261,21 +260,6 @@ void serviceAop() {
     gAopResult = R::qmp(gAop);
     gAopPending = 0;
 }
-// The post-mortem (the board's wifi-postmortem): once the WPSS died, a PAS shutdown hands its carveout back to this side, as Linux's
-// recovery does before its coredump, and the firmware's memory is read by its virtual addresses. gPmState: 1 asked, 2 readable,
-// negative failed.
-volatile int gPmState;
-IOMemoryMap *gPmMap;
-volatile uint8_t *gPmVa;
-void servicePostmortem() {
-    if (gPmState != 1) return;
-    R::pasShutdown(kPasWpss);
-    IODeviceMemory *memory = IODeviceMemory::withRange(kWpssBase, kWpssSize);
-    gPmMap = memory ? memory->map(kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
-    if (memory) memory->release();
-    gPmVa = gPmMap ? reinterpret_cast<volatile uint8_t *>(gPmMap->getVirtualAddress()) : nullptr;
-    gPmState = gPmVa ? 2 : -12;
-}
 void serviceGlink() {
     if (!gGlinkStarted) return;
     if (!gGlink.rx.data) {
@@ -421,17 +405,6 @@ bool start() {
     stage(StSmp2p);
 
     if ((rc = R::qmp("{class: image, res: load_state, name: wpss, val: on}"))) {fail(StLoadState, rc); return false;}
-    // wifi-vrm=1: the WLAN chip's supplies as icnss2 votes them (stock devicetree qcom,wcn6750: vdd-cx-mx = pm7550 S3B 968-1040 mV,
-    // vdd-1.8-xo = S1B 1856-2040 mV, vdd-1.3-rfa = S2B 1256-1408 mV): S3B at the top of its range, the others at their minimum.
-    unsigned vrm = 0;
-    PE_parse_boot_argn("wifi-vrm", &vrm, sizeof vrm);
-    if (vrm) {
-        char text[80];
-        const int a = R::voteVrm("smpb3", 1040), b = R::voteVrm("smpb1", 1856), c = R::voteVrm("smpb2", 1256);
-        snprintf(text, sizeof text, "smpb3 1040 %d, smpb1 1856 %d, smpb2 1256 %d", a, b, c);
-        note("vrm: ", text);
-        gVrm[0] = a; gVrm[1] = b; gVrm[2] = c; gVrm[3] = 1;
-    }
     stage(StLoadState);
     if ((rc = R::voteRails("cx.lvl", "mx.lvl", kLevelProxy, kLevelProxy))) {
         fail(StRails, rc); R::qmp("{class: image, res: load_state, name: wpss, val: off}"); return false;
@@ -500,7 +473,7 @@ extern "C" void asteroids_wpss_run(void) {
     startGlink();
 }
 
-extern "C" void asteroids_wpss_service(void) {serviceAop(); servicePostmortem(); service();}
+extern "C" void asteroids_wpss_service(void) {serviceAop(); service();}
 extern "C" int asteroids_wpss_aop(const char *message) {
     if (gAopPending) return -16;
     strlcpy(gAop, message, sizeof gAop);
@@ -510,27 +483,6 @@ extern "C" int asteroids_wpss_aop(const char *message) {
     return 0;
 }
 extern "C" int32_t asteroids_wpss_aop_result(void) {return gAopPending ? 1 : gAopResult;}
-// The wifi-vrm votes: 0 not voted, else 1 with the three results (smpb3, smpb1, smpb2) in out.
-extern "C" int asteroids_wpss_vrm(int32_t out[3]) {for (int i = 0; i < 3; ++i) out[i] = gVrm[i]; return gVrm[3];}
-// The post-mortem from the WLAN worker: asks for the carveout once (after the WPSS reported a fatal error) and returns gPmState.
-extern "C" int asteroids_wpss_postmortem(void) {
-    if (!gPmState && gRunning && (gSlave & kFatal)) {gPmState = 1; R::wakeWpss();}
-    return gPmState;
-}
-// Words of the dead firmware's memory: at its virtual address (physical 0: the image's segment map, 0xfe000000.. and 0xc0000000..), or at a
-// physical address inside the carveout (physical 1). 0, -1 outside, -19 before the carveout is back.
-extern "C" int asteroids_wpss_pm_read(uint64_t address, int physical, uint32_t *out, uint32_t words) {
-    if (gPmState != 2) return -19;
-    uint64_t pa = 0;
-    if (physical) pa = address;
-    else if (address >= 0xfe000000u && address < 0xfe074000u) pa = address - 0xfe000000u + 0x9bb00000u;
-    else if (address >= 0xc0000000u && address < 0xc15de000u) pa = address - 0xc0000000u + 0x9bc00000u;
-    else return -1;
-    if (pa < kWpssBase || pa + 4ull * words > kWpssBase + kWpssSize || (pa & 3)) return -1;
-    const volatile uint32_t *from = reinterpret_cast<const volatile uint32_t *>(gPmVa + (pa - kWpssBase));
-    for (uint32_t i = 0; i < words; ++i) out[i] = from[i];
-    return 0;
-}
 extern "C" int asteroids_wpss_pending(void) {return gRunning && gCount != 0;}
 
 // ---- the router link for the WiFi module (wifi=5): raw QRTR packets both ways ----
@@ -572,30 +524,6 @@ extern "C" int32_t asteroids_wpss_smp2p_send(unsigned entry, uint32_t message) {
     qcom_smp2p_update(&gP2p, index, 0xffffffffu, value);
     kickSmp2p();
     return (int32_t)value;
-}
-// Both SMP2P items as text for the log: header (version|features, pids, entry counts, flags) and every entry's name=value, ours first.
-extern "C" void asteroids_wpss_smp2p_dump(char *out, uint32_t cap) {
-    if (!cap) return;
-    out[0] = 0;
-    uint32_t at = 0;
-    auto put = [&](const char *fmt, auto... v) {
-        if (at + 1 >= cap) return;
-        const int n = snprintf(out + at, cap - at, fmt, v...);
-        if (n > 0) at = at + (uint32_t)n < cap ? at + (uint32_t)n : cap - 1;
-    };
-    for (int side = 0; side < 2; ++side) {
-        const volatile uint32_t *w = side ? gP2p.in : gP2p.out;
-        put("%s", side ? " | in" : "out");
-        if (!w) {put("%s", " none"); continue;}
-        put(" %x %x %x %x %x", w[0], w[1], w[2], w[3], w[4]);
-        const uint32_t valid = w[3] >> 16;
-        for (uint32_t i = 0; i < valid && i < QCOM_SMP2P_MAX_ENTRIES; ++i) {
-            char name[17];
-            for (unsigned c = 0; c < 16; ++c) name[c] = (char)(w[5 + 5 * i + c / 4] >> (8 * (c % 4)));
-            name[16] = 0;
-            put(" %s=%x", name, w[5 + 5 * i + 4]);
-        }
-    }
 }
 // The inbound "wlan_soc_wake" value (the firmware's acknowledgement of a wake request), -1 without the entry.
 extern "C" int32_t asteroids_wpss_soc_wake_in(void) {

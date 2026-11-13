@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Compile the WiFi module (drivers/Ath11kWifi: ath11k on the WCN6750's hybrid bus) to kernel objects for the board build.
 Usage: build-ath11k-wifi.py <module dir> <output dir>
-Prints one line "OBJ <path>" per object. NW_WIFI_RUNTIME_ONLY=1: only the runtime (no ath11k, mac80211 or their glue), unrenamed
-raw objects (build-qcacld-wifi.py links them with the qcacld objects and renames all of them together). sheng's build-ath12k-wifi.py (UniXNU-sheng 516a780) for the ath11k tree: the module fetches its pinned
+Prints one line "OBJ <path>" per object. sheng's build-ath12k-wifi.py (UniXNU-sheng 516a780) for the ath11k tree: the module fetches its pinned
 public sources with tools/fetch-sources.sh and lays out its generated include trees with tools/prepare.sh and tools/prepare-ath11k.sh first."""
 import hashlib, json, shlex, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
@@ -33,17 +32,12 @@ trees.update({name: ['-I', str(module / 'out' / name)] for name in ('mac80211', 
 trees['generated'] = trees['cfg80211']
 trees['crypto'] = ['-I', str(module / 'shim/crypto'), '-I', str(module / 'out/crypto')]
 
-import os
-runtime_only = os.environ.get('NW_WIFI_RUNTIME_ONLY') == '1'
-ath11k_glue = {'src/nw_ahb.c', 'src/nw_wifi.c', 'src/nw_debug.c', 'src/nw_crypto_mac80211.c', 'src/nw_fils.c'}
 jobs = []
 for line in (module / 'tools/sources.txt').read_text().splitlines():
     line = line.strip()
     if not line or line.startswith('#'):
         continue
     tree, _, name = line.partition(':') if ':' in line else ('', '', line)
-    if runtime_only and (tree in ('ath11k', 'mac80211') or name in ath11k_glue):
-        continue
     if tree == 'ath11k':
         src = module / 'out/ath11k-src' / name
     elif tree == 'qmi':
@@ -87,10 +81,6 @@ def build(job):
 
 with ThreadPoolExecutor(8) as pool:
     raw_objects = list(pool.map(build, jobs))
-if runtime_only:
-    for o in raw_objects:
-        print(f'OBJ {o}')
-    raise SystemExit
 
 # The module's global names (sock_release, kernel_sendmsg, ...) are common in a kernel: give every one the prefix nwk_ except the entry points the board uses.
 from wifi_entry_points import KEEP

@@ -33,33 +33,6 @@ int hex_dump_to_buffer(const void *buf, size_t len, int rowsize, int groupsize, 
 struct nw_fwd { u32 w0, w1, a[NW_FWD_ARGS]; };
 static struct nw_fwd *nw_fwd;
 static unsigned nw_fwd_total, nw_fwd_events, nw_fwd_bad, nw_fwd_raw;
-#define NW_WMI_CMDS 1024
-struct nw_wmi { u32 id, len, p[NW_FWD_ARGS]; u8 has_p; };
-static struct nw_wmi *nw_wmi;
-static unsigned nw_wmi_total;
-static void nw_wmi_add(u32 id, u32 len) {
-  if (!nw_wmi) nw_wmi = kzalloc(NW_WMI_CMDS * sizeof(*nw_wmi), GFP_ATOMIC);
-  if (!nw_wmi) return;
-  struct nw_wmi *w = &nw_wmi[nw_wmi_total++ % NW_WMI_CMDS];
-  memset(w, 0, sizeof(*w)); w->id = id; w->len = len;
-}
-static void nw_wmi_params(const u32 *a) {
-  if (!nw_wmi || !nw_wmi_total) return;
-  struct nw_wmi *w = &nw_wmi[(nw_wmi_total - 1) % NW_WMI_CMDS];
-  if (w->has_p) return;
-  memcpy(w->p, a, sizeof(w->p)); w->has_p = 1;
-}
-/* Logs the kept WMI commands from index from, lines a call: "wmi N: cmd len | first words"; returns the next index, 0 when done. */
-int nw_fw_wmi_dump(int from, int lines) {
-  const unsigned first = nw_wmi_total > NW_WMI_CMDS ? nw_wmi_total - NW_WMI_CMDS : 0;
-  if (!nw_wmi) { lx_log(6, "wmi stream: none kept"); return 0; }
-  if ((unsigned)from < first) { lx_log(6, "wmi stream: %u commands, %u kept", nw_wmi_total, nw_wmi_total - first); from = first; }
-  for (int n = 0; n < lines && (unsigned)from < nw_wmi_total; n++, from++) {
-    const struct nw_wmi *w = &nw_wmi[from % NW_WMI_CMDS];
-    lx_log(6, "wmi %d: %x %u | %x %x %x %x %x %x", from, w->id, w->len, w->p[0], w->p[1], w->p[2], w->p[3], w->p[4], w->p[5]);
-  }
-  return (unsigned)from < nw_wmi_total ? from : 0;
-}
 void nw_fw_diag(const void *data, unsigned long len) {
   const u8 *p = data;
   nw_fwd_events++;
@@ -85,36 +58,8 @@ void nw_fw_diag(const void *data, unsigned long len) {
     r->w0 = w[0]; r->w1 = w[1]; memset(r->a, 0, sizeof(r->a));
     memcpy(r->a, p + head, pay < sizeof(r->a) ? pay : sizeof(r->a));
     nw_fwd_total++;
-    { /* the WMI commands as the firmware received them (wmi_svc.c 11439 "WMI_CMD_RX CmdId Len", then 11440-11447 "WMI_CMD_PARAMS"):
-       * kept in their own ring for nw_fw_wmi_dump, to diff with the vendor host's stream */
-      const unsigned wid = r->w1 >> 16;
-      if (wid == 11439) nw_wmi_add(r->a[0], r->a[1]);
-      else if (wid >= 11440 && wid <= 11447) nw_wmi_params(r->a);
-    }
-    { /* the firmware's records of the host's receive setup (htt_tgt_rx.c 1261-1269, wal_rx_control.c 1103-1116), logged as they come */
-      static unsigned setup_logged; const unsigned id = r->w1 >> 16;
-      if (((id >= 1261 && id <= 1269) || (id >= 1103 && id <= 1116)) && setup_logged < 60) {
-        setup_logged++;
-        lx_log(6, "fwd %06x %u/%u/%u: %x %x %x %x %x %x", r->w0 & 0xffffff, r->w0 >> 24, id, (unsigned)pay, r->a[0], r->a[1], r->a[2],
-               r->a[3], r->a[4], r->a[5]);
-      }
-    }
     p += head + padded; len -= head + padded;
   }
-}
-/* Logs every kept record whose message id lies in [lo, hi] (Data.msc), oldest first, at most max of them: the firmware's own account of
- * the host's ring setup (htt_tgt_rx.c 1261-1269, wal_rx_control.c 1103-1116) to compare with the vendor host's (worker only). */
-void nw_fw_diag_dump_ids(unsigned lo, unsigned hi, unsigned max) {
-  const unsigned have = nw_fwd_total < NW_FWD_RECORDS ? nw_fwd_total : NW_FWD_RECORDS;
-  unsigned shown = 0;
-  if (!nw_fwd) return;
-  for (unsigned i = nw_fwd_total - have; i != nw_fwd_total && shown < max; i++) {
-    const struct nw_fwd *r = &nw_fwd[i % NW_FWD_RECORDS]; const unsigned id = r->w1 >> 16, pay = r->w1 & 0xff;
-    if (id < lo || id > hi) continue;
-    shown++;
-    lx_log(6, "fwd %06x %u/%u/%u: %x %x %x %x %x %x", r->w0 & 0xffffff, r->w0 >> 24, id, pay, r->a[0], r->a[1], r->a[2], r->a[3], r->a[4], r->a[5]);
-  }
-  lx_log(6, "fw diag ids %u-%u: %u of %u kept records", lo, hi, shown, have);
 }
 /* Logs count records ending skip records before the newest, oldest first: "fwd <timestamp> <id>/<payload bytes>: args". */
 void nw_fw_diag_dump(unsigned skip, unsigned count) {
