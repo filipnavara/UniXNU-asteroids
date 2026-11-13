@@ -20,4 +20,4 @@
 [submodule "drivers/GopFramebuffer"]
 	path = drivers/GopFramebuffer
 	url = https://github.com/filipnavara/GopFramebuffer.git
-	branch = asteroids
+	branch = asteroids-27

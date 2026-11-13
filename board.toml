@@ -558,9 +558,12 @@ kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_
                "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1",
                # Wi-Fi (WCN6750, drivers/Ath11kWifi on the WPSS, package/AsteroidsWifi.cpp): wifid, Settings' networks and joins (porting.toml network).
                "wifi=5",
-               # The GPU add-on (Turnip and the Metal plug-in, arm64e) with the GPU copy to the framebuffer. The zero-copy scanout of iPadOS 17
-               # (dpu-scanout=2 dpu-linux=1 dpu-flush=1) is off: with UniXNU's GopFramebuffer on 27 no swap was ever flipped or copied (black screen).
+               # The GPU add-on (Turnip and the Metal plug-in, arm64e). Zero-copy scanout (2026-11-13): the display pipe VIG 0 fetches the
+               # compositor's 8-bit frames itself (dpu-scanout=2, the bank set up as Linux does with dpu-linux=1, VIG 0 alone with dpu-flush=1;
+               # drivers/GopFramebuffer asteroids-27). It needs the 8-bit framebuffer of the text fixup below: half-float frames fall back to
+               # the GPU copy (fb-gpu=1). Earlier on 27 every frame was half float, so no swap was flipped.
                # The DEVELOPMENT kernel's timing checks are off through the built-in boot arguments (package/BootWatchdogPolicy.c).
+               "dpu-scanout=2", "dpu-linux=1", "dpu-flush=1",
                "gpu-addon=1", "fb-gpu=1", "gpu-dcvs=1", "gpu-dcvs-min=6", "gpu-dcvs-max=7",
                "gpu-irq=0",
                # wpa_supplicant (an owner-trusted binary at /usr/libexec) fails AMFI's launch constraints, which only platform binaries

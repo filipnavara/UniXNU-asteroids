@@ -21,7 +21,7 @@ UniXNU's:
 | `drivers/Adreno740` | [filipnavara/NativeAdreno](https://github.com/filipnavara/NativeAdreno) (branch `asteroids`) | Adreno 810 (gen8): GMU, ring, submits and the user client |
 | `drivers/ArmDTPlatform` | [filipnavara/ArmDTPlatform](https://github.com/filipnavara/ArmDTPlatform) (branch `asteroids`) | Platform expert; forwards the wall clock to the PMIC RTC (counter + offset on Data) |
 | `drivers/ShengHidInput` | [UniXNU/ShengHidInput](https://github.com/UniXNU/ShengHidInput) | HID touch and buttons |
-| `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids`) | GOP framebuffer and the GPU copy presenter |
+| `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids-27`: UniXNU's current driver with this board's scanout pipes; `asteroids` holds the iPadOS 17 fork) | GOP framebuffer, zero-copy scanout and the GPU copy presenter |
 | `kits/AdrenoFirmware` | [filipnavara/AdrenoFirmware](https://github.com/filipnavara/AdrenoFirmware) (branch `asteroids`) | GMU/HFI kit with the A8xx performance table and votes |
 
 ## State (2026-11-13)
@@ -30,7 +30,9 @@ UniXNU's:
 buttons work, the GPU add-on renders through Metal on the Adreno 810 (metal2vulkan and Turnip), the system apps are there,
 icons load (rendered on the CPU) and the wallpaper shows on the home and lock screens. Open issues:
 
-- graphic artifacts in GPU-rendered content; zero-copy scanout (`dpu-scanout=2`) is off;
+- graphic artifacts in GPU-rendered content. The compositor renders 8-bit frames (a QuartzCore text fixup; it chose half float
+  because `vmm-present` makes iPadOS think it runs in a virtual machine) and the display scans them out directly (`dpu-scanout=2`),
+  so the UI is noticeably smoother since 2026-11-13;
 - the GPU fault and freeze after the 2026-11-12 sync (about half of the boots, mostly once the lock screen was touched) is
   fixed (2026-11-13, UniXNU 1aa69d2: the Darwin Turnip backend wiped a live BO's entry); the kernel still does not restart
   the GPU after a hang, so a hang freezes the UI until a reboot;
