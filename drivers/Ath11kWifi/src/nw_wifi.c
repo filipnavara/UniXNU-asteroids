@@ -61,7 +61,6 @@ unsigned nw_wifi_wait_ms(unsigned maximum) {
   return nw_mainline_pending() || nw_wifi_control_pending() ? 0 : lx_next_wait_ms(maximum);
 }
 void nw_wifi_set_platform(const struct lx_platform *p) { lx_plat = p; }
-unsigned nw_wifi_threads_wanted(void) { return 0; }   /* one executor */
 /* The station's transmit and link counters (ath11k keeps per-peer rates in its station records; the mainline runtime's cached values serve). */
 void nw_wifi_tx_reasons(char *b, int n) { if (n) b[0] = 0; }
 void nw_wifi_link_state(char *text, int size) {

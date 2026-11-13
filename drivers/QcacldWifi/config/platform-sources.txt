@@ -1,6 +1,0 @@
-# Vendor platform sources built into the module (paths relative to the vendor wlan dir): the WLFW QMI client of icnss2 and the
-# WLFW message tables. The rest of icnss2 (main.c, power.c, debug.c, genl.c) is replaced by src/ (the small backend).
-platform/icnss2/qmi.c
-platform/cnss_utils/wlan_firmware_service_v01.c
-platform/cnss_utils/device_management_service_v01.c
-platform/cnss_utils/ip_multimedia_subsystem_private_service_v01.c

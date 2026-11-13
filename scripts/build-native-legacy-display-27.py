@@ -587,20 +587,12 @@ compile_cpp(KITS / 'AsteroidsWifi.cpp', board_dir / 'AsteroidsWifi.o', ('-I', st
 board_objects.append(board_dir / 'AsteroidsWifi.o')
 compile_c(KITS / 'AsteroidsWifiFiles.c', board_dir / 'AsteroidsWifiFiles.bsd.o', recipe='bsd/DEVELOPMENT/kern_exec.o.json')
 board_objects.append(board_dir / 'AsteroidsWifiFiles.bsd.o')
-# ASTEROIDS_WIFI_MODULE=qcacld links the qcacld module (drivers/QcacldWifi, build-qcacld-wifi.py) instead of ath11k; the board code
-# is the same (nw_abi.h), the module tells it whether it wants threads (nw_wifi_threads_wanted).
-WIFI_MODULE = os.environ.get('ASTEROIDS_WIFI_MODULE', 'ath11k')
-require(WIFI_MODULE in ('ath11k', 'qcacld'), f'ASTEROIDS_WIFI_MODULE={WIFI_MODULE}: ath11k or qcacld')
-if WIFI_MODULE == 'qcacld':
-    wifi_script, wifi_module_dir, wifi_out = 'build-qcacld-wifi.py', WIFI.parent / 'QcacldWifi', board_dir / 'qcacld-wifi'
-else:
-    wifi_script, wifi_module_dir, wifi_out = 'build-ath11k-wifi.py', WIFI, board_dir / 'ath11k-wifi'
-wifi_build = subprocess.check_output(['python3', str(ROOT / 'scripts' / wifi_script), str(wifi_module_dir), str(wifi_out)],
+wifi_build = subprocess.check_output(['python3', str(ROOT / 'scripts/build-ath11k-wifi.py'), str(WIFI), str(board_dir / 'ath11k-wifi')],
                                      timeout=3600, text=True)
 wifi_objects = [Path(line.split(' ', 1)[1]) for line in wifi_build.splitlines() if line.startswith('OBJ ')]
-require(wifi_objects, f'{wifi_script} built no objects')
+require(wifi_objects, 'build-ath11k-wifi.py built no objects')
 board_objects += wifi_objects
-print(f'WiFi module ({WIFI_MODULE}): {len(wifi_objects)} objects')
+print(f'WiFi module (ath11k): {len(wifi_objects)} objects')
 # The audio DSP firmware reader (sheng_fw_*, which AdspProbe uses): a VFS reader, so with kern_exec's BSD flags, as iPadOS 17's
 # boot progress kit builds it (build-boot-progress.py).
 compile_c(KITS / 'AdspFirmware.c', board_dir / 'AdspFirmware.bsd.o', recipe='bsd/DEVELOPMENT/kern_exec.o.json',

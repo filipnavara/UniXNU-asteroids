@@ -202,7 +202,7 @@ struct reserved_mem { phys_addr_t base, size; };
 struct resource { phys_addr_t start, end; };
 #define IPV6_ADDR_SCOPE_LINKLOCAL 2
 #define IPV6_ADDR_SCOPE_GLOBAL 14
-#ifndef LX_HAVE_INET6_STRUCTS /* QcacldWifi defines the Linux layouts */
+#ifndef LX_HAVE_INET6_STRUCTS /* a driver that needs the Linux layouts defines them first */
 struct inet6_ifaddr { int unused; }; struct inet6_dev { int unused; }; struct ifacaddr6 { int unused; };
 #endif
 #define ipv6_addr_src_scope(a) 0

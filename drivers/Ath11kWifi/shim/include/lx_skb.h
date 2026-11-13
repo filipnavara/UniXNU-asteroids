@@ -68,7 +68,7 @@ struct netdev_hw_addr { struct list_head list; u8 addr[32], type; unsigned refco
 struct net_device_stats { u64 rx_packets, rx_bytes, rx_dropped, tx_packets, tx_bytes, tx_dropped; LX_NETSTATS_EXTRA };
 struct lx_netdev_tx;
 struct lx_netdev_tx_stats { u64 accepted, queue_full, busy, dispatched, purged, peak_packets, peak_bytes; };
-/* Extension hooks for a driver that needs more of Linux's fields (QcacldWifi defines them before this header; empty here). */
+/* Extension hooks for a driver that needs more of Linux's fields (defined before this header; empty for ath11k). */
 #ifndef LX_SKB_EXTRA
 #define LX_SKB_EXTRA
 #endif

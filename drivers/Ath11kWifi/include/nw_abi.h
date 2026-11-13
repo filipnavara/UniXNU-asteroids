@@ -24,8 +24,9 @@ struct lx_platform {
   void (*busy_delay_us)(unsigned int us);   /* optional hardware delay; never dispatch callbacks */
   void (*preempt_disable)(void);           /* paired native hooks for shared control/status locks */
   void (*preempt_enable)(void);
-  /* ---- optional: threads (QcacldWifi's kthreads). Module code runs under one module lock: the board worker holds it inside
-   * the module's entry points, module threads while they run; every wait releases it (module_wait). Zero: one executor. ---- */
+  /* ---- optional: threads (the runtime's thread model; ath11k needs none and the board leaves them zero). Module code runs under
+   * one module lock: the board worker holds it inside the module's entry points, module threads while they run; every wait
+   * releases it (module_wait). Zero: one executor. ---- */
   void *(*thread_self)(void);                       /* a token of the calling thread */
   int (*thread_start)(void (*fn)(void *), void *arg); /* a new kernel thread runs fn(arg); 0 started */
   void (*thread_exit)(void);                        /* ends the calling thread (one thread_start made); does not return */
@@ -50,9 +51,6 @@ struct nw_board {
   int (*smp2p_wlan)(uint32_t mask, uint32_t value);  /* the outbound SMP2P "wlan" bits */
   unsigned debug_mask;                               /* ath11k_debug_mask (ATH11K_DBG_*): its debug messages at log level 7 */
   void (*cpr_voltage)(uint32_t millivolts);          /* the firmware named its CX rail's open-loop voltage (QMI capability reply) */
-  /* ---- QcacldWifi (icnss backend); zero for ath11k ---- */
-  int32_t (*smp2p_send)(unsigned entry, uint32_t message);  /* icnss2's outbound SMP2P entries: 0 power save, 1 soc wake, 2 ep power save */
-  int32_t (*soc_wake_in)(void);                      /* the firmware's inbound "wlan_soc_wake" word (bit 0 flips to acknowledge) */
 };
 /* Ath11kWifi: one QRTR packet from the WPSS, on the wireless worker (the board queues them and calls this from its poll). */
 void nw_wifi_qrtr_rx(const void *packet, size_t len);
@@ -119,9 +117,6 @@ void nw_wifi_status_get(struct nw_wifi_status *st);
 void nw_wifi_tx_reasons(char *text, int size);                          /* the driver's transmit completion counts, as text */
 void nw_wifi_link_state(char *text, int size); /* worker only; reads cached peer rates, no firmware request */
 int nw_wifi_start(const struct lx_platform *p, const struct nw_board *b);
-/* Nonzero: the module brackets its entry points with the module lock and wants lx_platform's thread callbacks (QcacldWifi);
- * zero: one executor, the callbacks stay unset (Ath11kWifi). Asked before nw_wifi_set_platform. */
-unsigned nw_wifi_threads_wanted(void);
 void nw_wifi_set_platform(const struct lx_platform *p); /* before exposing native socket callbacks */
 int nw_wifi_step(void);                                                   /* nonzero while frames move: call again without sleeping */
 /* Board poll delivers observed MSI bits from the worker, including nested waits. */

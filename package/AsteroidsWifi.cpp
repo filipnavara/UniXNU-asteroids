@@ -653,37 +653,6 @@ void pPoll() {
     nw_wifi_poll();
 }
 void pHalt() {for (;;) IOSleep(1000);}
-// ---- threads for a module that asks for them (nw_wifi_threads_wanted: QcacldWifi's kthreads) ----
-// One module lock; module_wait sleeps with it released (IOLockSleepDeadline: no lost wakeup against a waker that holds it).
-IOLock *gModuleLock;
-int gModuleEvent;
-void *pThreadSelf() {return current_thread();}
-struct ThreadStart {void (*fn)(void *); void *arg;};
-void threadMain(void *param, wait_result_t) {
-    ThreadStart *start = static_cast<ThreadStart *>(param);
-    const ThreadStart s = *start;
-    IOFreeType(start, ThreadStart);
-    s.fn(s.arg);
-    thread_terminate(current_thread());
-}
-int pThreadStart(void (*fn)(void *), void *arg) {
-    ThreadStart *s = IOMallocType(ThreadStart);
-    if (!s) return -12;
-    s->fn = fn; s->arg = arg;
-    thread_t thread = nullptr;
-    if (kernel_thread_start(threadMain, s, &thread) != KERN_SUCCESS) {IOFreeType(s, ThreadStart); return -35;}
-    thread_deallocate(thread);
-    return 0;
-}
-void pThreadExit() {thread_terminate(current_thread()); for (;;) IOSleep(1000);}
-void pModuleLock() {IOLockLock(gModuleLock);}
-void pModuleUnlock() {IOLockUnlock(gModuleLock);}
-void pModuleWait(unsigned ms) {
-    uint64_t deadline = 0;
-    clock_interval_to_deadline(ms ? ms : 1, kMillisecondScale, &deadline);
-    IOLockSleepDeadline(gModuleLock, &gModuleEvent, deadline, THREAD_UNINT);
-}
-void pModuleWake() {IOLockWakeup(gModuleLock, &gModuleEvent, false); wakeWorker();}
 void *hAlloc(size_t n) {
     uint8_t *p = static_cast<uint8_t *>(IOMallocData(n + 16));
     if (!p) return nullptr;
@@ -1253,14 +1222,7 @@ void wifiThread(void *, wait_result_t) {
     static const struct lx_platform plat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync, pFwGet,
                                             pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption,
                                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};   // one executor
-    static const struct lx_platform threadedPlat = {pNow, pSleep, pPoll, pLog, pHalt, hAlloc, hFree, pDmaAlloc, pDmaFree, pDmaMap, pDmaSync,
-                                                    pFwGet, pNowNs, pBootNs, pBusyDelayUs, _disable_preemption, _enable_preemption,
-                                                    pThreadSelf, pThreadStart, pThreadExit, pModuleLock, pModuleUnlock,
-                                                    pModuleWait, pModuleWake};
-    const bool threads = nw_wifi_threads_wanted() != 0;
-    if (threads && !gModuleLock) gModuleLock = IOLockAlloc();
-    nw_wifi_set_platform(threads && gModuleLock ? &threadedPlat : &plat);
-    if (threads) logf(6, "wifi: module threads %s", gModuleLock ? "on" : "unavailable (no lock)");
+    nw_wifi_set_platform(&plat);
     static struct nw_board board;
     board.irq_base = kIrqBase;
     board.map_phys = pMapPhys;
@@ -1271,8 +1233,6 @@ void wifiThread(void *, wait_result_t) {
     board.rproc_up = pRprocUp;
     board.smp2p_wlan = pSmp2pWlan;
     board.cpr_voltage = pCprVoltage;
-    board.smp2p_send = asteroids_wpss_smp2p_send;
-    board.soc_wake_in = asteroids_wpss_soc_wake_in;
     unsigned wmiMem = 1;  // wifi-wmi-mem=0: only log the firmware's host memory requests
     PE_parse_boot_argn("wifi-wmi-mem", &wmiMem, sizeof wmiMem);
     nw_wifi_wmi_mem = wmiMem;
@@ -1364,9 +1324,7 @@ void wifiThread(void *, wait_result_t) {
                 nw_wifi_reg_check("before the votes");
                 {int32_t v[3]; const int voted = asteroids_wpss_vrm(v); if (voted) logf(6, "wifi: supply votes smpb3 %d smpb1 %d smpb2 %d", v[0], v[1], v[2]);}
             }
-            // The qcacld module (it wants threads) sends the SoC wake / EP power save messages itself through its icnss backend
-            // (nw_board.smp2p_send, with icnss2's sequence numbers): the board's own handshake is for ath11k only.
-            if (awake && !threads) {
+            if (awake) {
                 logSmp2p("before");
                 const int32_t ep = asteroids_wpss_smp2p_send(2, 7);
                 logf(6, "wifi: ep power save exit %x", ep);
