@@ -464,6 +464,9 @@ kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_
                # GPU interrupts go to the driver's completion pass (gpu-irq=1; fence waits sleep instead of spinning) and the CP stamps every job
                # (gpu-timeline=1, the [gpu jobs]/[gpu long]/[gpu slow] rows). irq1 2026-11-13: d1 throttled windows 1623 -> 13.
                "gpu-irq=1", "gpu-timeline=1",
+               # The speakers (and microphone) through the audio DSP, as on iPadOS 17 (T40k-spk-sd1): the kernel's audio service, which the
+               # add-on's audio server plug-in opens. sheng's iPadOS 27 board runs it the same way; adsp=2 (the DSP) is the package default.
+               "audio=1",
                # wpa_supplicant (an owner-trusted binary at /usr/libexec) fails AMFI's launch constraints, which only platform binaries
                # meet; UniXNU's zzyc-owner-skip-launch-constraints patch skips the check with this (sheng's board runs with it too).
                "no-lc=1"]
@@ -489,6 +492,12 @@ wifi_tool = "scripts/build-wifi-userspace.py"
 wifi_target = "ios27"
 wifi_launchd_cache = true
 wifi_bin_prefix = "wifi-bin"
+# The audio server plug-in (hal/ShengAudioPlugIn.c) for 27's arm64e audio server, in the add-on's audio/ (mounted over
+# /System/Library/Audio/Plug-Ins/HAL by patches/xnu-12377/zzyd); the overlay hides the system's plug-ins, so the Bluetooth one is carried
+# unchanged (sheng's iPadOS 27 board).
+audio_tool = "scripts/build-sheng-audio-hal.py"
+audio_target = "arm64e-apple-ios27.0"
+audio_system_plugins = ["BTAudioHALPlugin.driver"]
 
 [os_overrides."ios-27.0.1-24A446".payload.runtime.launchd_job_environment."com.apple.iconservices.iconservicesagent"]
 # The whole agent on the CPU. CoreImage looks its built-in kernels up by name (_asgDownH, its downsampler) and the plug-in's translator
