@@ -493,9 +493,9 @@ wifi_target = "ios27"
 wifi_launchd_cache = true
 wifi_bin_prefix = "wifi-bin"
 # The audio server plug-in (hal/ShengAudioPlugIn.c) for 27's arm64e audio server, in the add-on's audio/, a union mount over
-# /System/Library/Audio/Plug-Ins/HAL (patches/xnu-12377/zzyd): the system's plug-ins stay listed, so none is carried. sheng's board carries
-# BTAudioHALPlugin.driver; here (audio1, 2026-11-14) it then loaded twice and its XPC listener failed about 100000 times ("Operation
-# already in progress").
+# /System/Library/Audio/Plug-Ins/HAL (patches/xnu-12377/zzyd): the system's plug-ins stay listed (audio1 loaded OctaviaHalogen and the
+# others from /System), so none is carried, unlike sheng's board (BTAudioHALPlugin.driver). Its XPC listener failures ("Operation already
+# in progress") come with or without the copy.
 audio_tool = "scripts/build-sheng-audio-hal.py"
 audio_target = "arm64e-apple-ios27.0"
 
@@ -624,9 +624,9 @@ wifi_target = "ios27"
 wifi_launchd_cache = true
 wifi_bin_prefix = "wifi-bin"
 # The audio server plug-in (hal/ShengAudioPlugIn.c) for 27's arm64e audio server, in the add-on's audio/, a union mount over
-# /System/Library/Audio/Plug-Ins/HAL (patches/xnu-12377/zzyd): the system's plug-ins stay listed, so none is carried. sheng's board carries
-# BTAudioHALPlugin.driver; here (audio1, 2026-11-14) it then loaded twice and its XPC listener failed about 100000 times ("Operation
-# already in progress").
+# /System/Library/Audio/Plug-Ins/HAL (patches/xnu-12377/zzyd): the system's plug-ins stay listed (audio1 loaded OctaviaHalogen and the
+# others from /System), so none is carried, unlike sheng's board (BTAudioHALPlugin.driver). Its XPC listener failures ("Operation already
+# in progress") come with or without the copy.
 audio_tool = "scripts/build-sheng-audio-hal.py"
 audio_target = "arm64e-apple-ios27.0"
 
