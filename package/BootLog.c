@@ -91,6 +91,7 @@ extern volatile uint32_t native_adreno_job_time[8] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_long_jobs[8][8] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_slow_jobs[16][8] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_fence_wake[8] __attribute__((weak_import));
+extern void boot_process_start(void) __attribute__((weak_import));
 extern volatile uint32_t native_legacy_timeline[3][10] __attribute__((weak_import));
 extern volatile uint32_t native_gpu_time[16] __attribute__((weak_import));
 extern volatile uint32_t native_gpu_work[18] __attribute__((weak_import));
@@ -1871,6 +1872,9 @@ void boot_log_tick(unsigned now) {
     if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
     if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
   }
+  // The process stack worker (BootProcessWorker.c, sheng's; boot-ui-trace=1 with boot-ui-focus* naming the processes): nothing else in
+  // this kernel starts it. Its captures appear as the [stacks] rows below.
+  if (&boot_process_start) boot_process_start();
   uint32_t mode = 0;
   if (!PE_parse_boot_argn("log", &mode, sizeof mode) || mode != 1) return;
   if (!&native_ufs_log_open || !&native_ufs_log_write || !&native_ufs_log_sync) return;

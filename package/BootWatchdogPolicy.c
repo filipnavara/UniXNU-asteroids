@@ -215,7 +215,20 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  if(!enabled && !jobs[0] && !lite)return 0;
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));
- if(lite)for(const char *c=lite_jobs;*c;) {if((error=append_job(&c,addon==1?lite_kept_for_addon:NULL)))return error;}
+ // lite-keep=<label>[,<label>...]: labels of the lite list that stay enabled on this boot (a test of one job without a new kernel).
+ static char lite_keep[256];
+ if(!PE_parse_boot_argn("lite-keep",lite_keep,sizeof(lite_keep)))lite_keep[0]=0;lite_keep[sizeof(lite_keep)-1]=0;
+ if(lite)for(const char *c=lite_jobs;*c;) {
+  const char *e=c;while(*e && *e!=',')++e;
+  int kept=0;
+  for(const char *k=lite_keep;*k && !kept;) {
+   const char *ke=k;while(*ke && *ke!=',')++ke;
+   kept=(ke-k)==(e-c) && !memcmp(k,c,(size_t)(e-c));
+   k=*ke?ke+1:ke;
+  }
+  if(kept){c=*e?e+1:e;continue;}
+  if((error=append_job(&c,addon==1?lite_kept_for_addon:NULL)))return error;
+ }
  for(const char *c=jobs;*c;) {if((error=append_job(&c,NULL)))return error;}
  strlcat(policy,policy_tail,sizeof(policy));
  const char *directory="/private/var/db/com.apple.xpc.launchd";
