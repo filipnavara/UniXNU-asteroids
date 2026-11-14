@@ -1,0 +1,48 @@
+--- a/bsd/dev/dtrace/sdt.c
++++ b/bsd/dev/dtrace/sdt.c
+@@ -598,7 +598,9 @@ sdt_load_machsect(struct modctl *ctl)
+ 	}
+ 
+ 	/* Locate DTrace SDT section in the object. */
+-	if ((sec_sdt = getsectbynamefromheader(mh, "__DATA_CONST", "__sdt")) == NULL) {
++	/* asteroids iOS 27: the kernel's records are in __DATA (osfmk/mach/arm/sdt_isa.h); kexts keep __DATA_CONST. */
++	if ((sec_sdt = getsectbynamefromheader(mh, "__DATA", "__sdt")) == NULL &&
++	    (sec_sdt = getsectbynamefromheader(mh, "__DATA_CONST", "__sdt")) == NULL) {
+ 		return;
+ 	}
+ 
+--- a/osfmk/mach/arm/sdt_isa.h
++++ b/osfmk/mach/arm/sdt_isa.h
+@@ -48,12 +48,17 @@
+ 
+ #if (__SIZEOF_POINTER__ == 8)
+ 
++/*
++ * asteroids iOS 27: the probe names go to __TEXT (strings only) and the probe records to __DATA (bsd/dev/dtrace/sdt.c reads them
++ * there). The iPhone17,4 kernelcache leaves 0x123578 bytes for the DEVELOPMENT kernel's __DATA_CONST (0x12a2f0 used, 0x146e9 of it
++ * these two sections).
++ */
+ #define DTRACE_LABEL(p, n)                                                          \
+-	".pushsection __DATA_CONST, __sdt_cstring, cstring_literals\n\t"                \
++	".pushsection __TEXT, __sdt_cstring, cstring_literals\n\t"                      \
+ 	"1: .ascii \"" DTRACE_STRINGIFY(p##___) "\\0\"\n\t"                             \
+ 	"2: .ascii \"" DTRACE_STRINGIFY(n) "\\0\"\n\t"                                  \
+ 	".popsection" "\n\t"                                                            \
+-	".pushsection __DATA_CONST, __sdt, regular, live_support\n\t"                   \
++	".pushsection __DATA, __sdt, regular, live_support\n\t"                         \
+ 	".p2align 3\n\t"                                                                \
+ 	"l3_%=:\n\t"                                                                    \
+ 	".quad 4f""\n\t"                                                                \
+--- a/osfmk/vm/vm_pageout.c
++++ b/osfmk/vm/vm_pageout.c
+@@ -899,7 +899,9 @@ vm_pageout_throttle_up_batch(
+  * also returns the number of pages the system still needs to reclaim at this
+  * moment in time.
+  */
+-#if DEVELOPMENT || DEBUG
++/* asteroids iOS 27: the RELEASE history (1 s) on DEVELOPMENT too; the 30 s one costs 0x24068 bytes of __DATA, which the iPhone17,4
++ * kernelcache does not leave room for (0x1d4000 for the native __DATA). */
++#if (DEVELOPMENT || DEBUG) && 0
+ #define VM_PAGEOUT_STAT_SIZE    (30 * 8) + 1
+ #else
+ #define VM_PAGEOUT_STAT_SIZE    (1 * 8) + 1

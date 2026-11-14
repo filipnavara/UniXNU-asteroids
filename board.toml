@@ -411,7 +411,7 @@ include = ["ArmDTPlatform", "ArmCpu", "RamBlock", "XnuPrelink", "DarwinBoot", "G
 [os_overrides."ios-27.0.1-24A446".kernel]
 defconfig = "asteroids_ios27_defconfig"
 config_fragments = ["arch:configs/common.config", "soc:configs/sm7635.config", "os:configs/ipados.config"]
-patch_series = ["arch:patches/xnu/series", "soc:patches/xnu-12377/series", "os:patches/xnu/series", "device:patches/xnu-12377/series"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu-12377/series", "os:patches/xnu/series", "device:patches/xnu-12377/series", "device:patches/xnu-12377-ios27/series"]
 archives = [
   "build-corecrypto-14.py",
   "build-corecrypto-14.py --namespace",
@@ -442,6 +442,10 @@ archives = [
 # launchd cache in the add-on take it past 112 MiB.
 size_mib = 128
 root_policies = "{tree}/build/sheng-source-storage/root-policies.bin"
+# The render server composites in 8-bit BGRA (see the iPadOS 27 payload): the iPhone17,4 cache has QuartzCore's
+# IOMFBDisplay::framebuffer_pixel_format branch at the same place (0x184461928, dyld_shared_cache_arm64e.01 file offset 0x4061928, checked
+# 2026-11-13 in the D48 SystemOS cryptex 043-69270-710).
+text_fixups = ["dyld_shared_cache_arm64e.01,4061928,08060037,1f2003d5"]
 kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_panic", "use_contiguous_hint=0",
                "ml-timeout-lock-panic-scale=40", "armcpu-diagnostics=1", "native-source-storage=1", "native-ufs-root=1",
                "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=0", "offline-legacy-register=1", "offline-legacy-gop=1",
@@ -451,11 +455,18 @@ kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_
                "vsync=120", "asteroids-panel=3", "disable-watchdogd=1", "lite=1",
                # Wi-Fi (WCN6750, drivers/Ath11kWifi on the WPSS, package/AsteroidsWifi.cpp): wifid, Settings' networks and joins (porting.toml network).
                "wifi=5",
-               # The GPU add-on (Turnip and the Metal plug-in, arm64e) with the GPU copy to the framebuffer. The zero-copy scanout of iPadOS 17
-               # (dpu-scanout=2 dpu-linux=1 dpu-flush=1) is off: with UniXNU's GopFramebuffer on 27 no swap was ever flipped or copied (black screen).
-               # The DEVELOPMENT kernel's timing checks are off through the built-in boot arguments (package/BootWatchdogPolicy.c).
+               # The GPU add-on (Turnip and the Metal plug-in, arm64e). Zero-copy scanout (2026-11-13): the display pipe VIG 0 fetches the
+               # compositor's 8-bit frames itself (dpu-scanout=2, the bank set up as Linux does with dpu-linux=1, VIG 0 alone with dpu-flush=1;
+               # drivers/GopFramebuffer asteroids-27). It needs the 8-bit framebuffer of the text fixup below: half-float frames fall back to
+               # the GPU copy (fb-gpu=1). Earlier on 27 every frame was half float, so no swap was flipped.
+               "dpu-scanout=2", "dpu-linux=1", "dpu-flush=1",
                "gpu-addon=1", "fb-gpu=1", "gpu-dcvs=1", "gpu-dcvs-min=6", "gpu-dcvs-max=7",
-               "gpu-irq=0"]
+               # GPU interrupts go to the driver's completion pass (gpu-irq=1; fence waits sleep instead of spinning) and the CP stamps every job
+               # (gpu-timeline=1, the [gpu jobs]/[gpu long]/[gpu slow] rows). irq1 2026-11-13: d1 throttled windows 1623 -> 13.
+               "gpu-irq=1", "gpu-timeline=1",
+               # wpa_supplicant (an owner-trusted binary at /usr/libexec) fails AMFI's launch constraints, which only platform binaries
+               # meet; UniXNU's zzyc-owner-skip-launch-constraints patch skips the check with this (sheng's board runs with it too).
+               "no-lc=1"]
 
 [os_overrides."ios-27.0.1-24A446".payload.runtime]
 tool = "scripts/build-boot-runtime.py"
@@ -468,8 +479,16 @@ skip_setup = true
 trust_components = ["StaticTrustCache", "Cryptex1,SystemTrustCache", "Cryptex1,AppTrustCache"]
 # Turnip (build-turnip-darwin.py --target ios27) and the Metal plug-in against this board's NativeAdrenoABI.h.
 gpu_addon = true
-# The default wallpaper's layers as PNG (make-wallpaper-overlay.py): its HEIC images need Apple's hardware HEVC decoder (sheng's).
-wallpapers = ["ipados27", "ipados27-floating"]
+# No wallpaper overlay yet: make-wallpaper-overlay.py knows only iPadOS 27's default wallpaper (iPadOS_17~ipad); the iPhone image
+# has iOS_17~iphone, whose HEIC layers need Apple's hardware HEVC decoder (sheng's).
+wallpapers = []
+# Wi-Fi (drivers/Ath11kWifi): wpa_supplicant with the -Dsheng backend, its job merged into the OS launchd cache, its executable in the
+# add-on's wifi-bin/ (shown over /usr/libexec by patches/xnu-12377/zzzzzzzzzc). UNIXNU_WIFI_JOIN adds the join test's network (never in
+# a release).
+wifi_tool = "scripts/build-wifi-userspace.py"
+wifi_target = "ios27"
+wifi_launchd_cache = true
+wifi_bin_prefix = "wifi-bin"
 
 [os_overrides."ios-27.0.1-24A446".payload.runtime.launchd_job_environment."com.apple.iconservices.iconservicesagent"]
 # The whole agent on the CPU. CoreImage looks its built-in kernels up by name (_asgDownH, its downsampler) and the plug-in's translator

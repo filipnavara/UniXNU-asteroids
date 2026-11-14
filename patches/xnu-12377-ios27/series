@@ -1,0 +1,5 @@
+# iOS 27 (iPhone17,4 kernelcache) only, after the device series. The DEVELOPMENT kernel must fit the room the iPhone collection leaves
+# at its kernel's place: __DATA_CONST up to 0x11c000 with __LASTDATA_CONST after it (the first retained kext constants are at
+# +0x123578; iPad +0x188aa8) and __DATA up to 0x1d4000. The DTrace probe names (0x6d81) move to __TEXT and the probe records
+# (0xd968) to __DATA, and the pageout statistics history (0x24068 of __DATA) takes its RELEASE length. Assertions are unchanged.
+zzzzzzzzzz-ios27-dataconst-room.patch
