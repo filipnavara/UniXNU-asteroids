@@ -40,6 +40,7 @@ static AudioServerPlugInHostRef gHost;
 static pthread_mutex_t gLock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint gRefs = 1;
 static io_connect_t gConnect;
+static UInt32 gTransport = kAudioDeviceTransportTypeThunderbolt;
 static ShengAudioControl *gControl;
 static int16_t *gOut, *gIn;
 static UInt32 gIoUsers;
@@ -59,6 +60,12 @@ static int connectService(void) {
     if (gControl) return 0;
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(SHENG_AUDIO_CLASS));
     if (!service) return -1;
+    // asteroids: the transport type the kernel service publishes (audio-transport=), Thunderbolt without it.
+    CFTypeRef transport = IORegistryEntryCreateCFProperty(service, CFSTR("ShengAudioTransport"), kCFAllocatorDefault, 0);
+    if (transport) {
+        if (CFGetTypeID(transport) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)transport, kCFNumberSInt32Type, &gTransport);
+        CFRelease(transport);
+    }
     kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &gConnect);
     IOObjectRelease(service);
     if (kr != KERN_SUCCESS) return -1;
@@ -321,7 +328,9 @@ static OSStatus propertyData(AudioObjectID o, const AudioObjectPropertyAddress *
         // Thunderbolt: the audio server's routing layer makes a device of this transport a driver device with one output and one input
         // port of its own. Built-in devices are only used through Apple's port descriptions, and a USB device must carry a USB location
         // ('lcID') that the HAL does not take from a plug-in (i529).
-        case kAudioDevicePropertyTransportType: REPLY(UInt32, kAudioDeviceTransportTypeThunderbolt);
+        // asteroids: iOS 27's iPhone routing (RoutingSettings_N71 class) refuses Thunderbolt ports (kVirtualAudioObjectRoutingNotSupportedError,
+        // audio1); the kernel service's ShengAudioTransport (audio-transport=) picks another type to try.
+        case kAudioDevicePropertyTransportType: REPLY(UInt32, gTransport);
         case kAudioDevicePropertyRelatedDevices: REPLY(AudioObjectID, kDevice);
         case kAudioDevicePropertyClockDomain: REPLY(UInt32, 0);
         case kAudioDevicePropertyDeviceIsAlive: REPLY(UInt32, 1);

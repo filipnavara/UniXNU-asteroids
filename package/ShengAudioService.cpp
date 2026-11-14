@@ -77,6 +77,11 @@ public:
         // iOS's audio server is sandboxed against unknown user clients; the kernel lets these processes open this service.
         setProperty("NativeSandboxGrantProcess", "audiomxd,mediaserverd");
         setProperty("IOUserClientClass", "ShengAudioUserClient");
+        // asteroids: the audio server plug-in's device transport type (hal/ShengAudioPlugIn.c), a four-character code as a number;
+        // audio-transport=<n> overrides the plug-in's default (Thunderbolt), which iOS 27's iPhone routing does not route (audio1).
+        uint32_t transport = 0;
+        if (PE_parse_boot_argn("audio-transport", &transport, sizeof transport) && transport)
+            setProperty("ShengAudioTransport", transport, 32);
         registerService();
         return true;
     }
