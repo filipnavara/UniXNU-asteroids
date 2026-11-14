@@ -467,9 +467,10 @@ kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_
                # The speakers (and microphone) through the audio DSP, as on iPadOS 17 (T40k-spk-sd1): the kernel's audio service, which the
                # add-on's audio server plug-in opens. sheng's iPadOS 27 board runs it the same way; adsp=2 (the DSP) is the package default.
                "audio=1",
-               # The plug-in's device as HDMI ('hdmi'): the iPhone routing refuses its default Thunderbolt ports (audio1) and makes no ports for USB
-               # (audio2); HDMI played sounds (audio3, 2026-11-14), its port at first connected but not routable. No input port for the mic.
-               "audio-transport=0x68646d69",
+               # The plug-in's device as the iPhone's built-in "Codec" ('bltn', hal/ShengAudioPlugIn.c): VirtualAudio gives it the Built-In
+               # Speaker port, the only one system sounds route to (audio4/5, 2026-11-14: the ringtone preview plays). Thunderbolt ports are
+               # refused on the iPhone (audio1), USB gets none (audio2), HDMI plays media but never system sounds (audio3).
+               "audio-transport=0x626c746e",
                # wpa_supplicant (an owner-trusted binary at /usr/libexec) fails AMFI's launch constraints, which only platform binaries
                # meet; UniXNU's zzyc-owner-skip-launch-constraints patch skips the check with this (sheng's board runs with it too).
                "no-lc=1"]
