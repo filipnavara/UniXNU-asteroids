@@ -24,7 +24,20 @@ UniXNU's:
 | `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids-27`: UniXNU's current driver with this board's scanout pipes; `asteroids` holds the iPadOS 17 fork) | GOP framebuffer, zero-copy scanout and the GPU copy presenter |
 | `kits/AdrenoFirmware` | [filipnavara/AdrenoFirmware](https://github.com/filipnavara/AdrenoFirmware) (branch `asteroids`) | GMU/HFI kit with the A8xx performance table and votes |
 
-## State (2026-11-13)
+## State (2026-11-14)
+
+**iOS 27.0.1 (24A446, the iPhone17,4 images)** boots to the UI on the DEVELOPMENT kernel (2026-11-14; the iPhone
+kernelcache leaves less room, so `patches/xnu-12377-ios27` moves DTrace's probe records out of `__DATA_CONST`). It is
+somewhat sluggish and the wallpaper appears late. Typing in Settings pins a core: dictation availability keeps changing and
+each change rebuilds the iPhone keyboard's dock.
+
+- Sound (2026-11-14): no 27 profile had ever enabled it (`audio=1` and the audio server plug-in were missing). With both,
+  the plug-in posing as the built-in Codec device, a ringtone preview plays through the speakers; the lock and keyboard
+  clicks are still silent and the microphone is untested. Since the add-on's `audio/` mount, the Bluetooth HAL plug-in's
+  XPC listeners fail in a loop in the audio server. Tested on iOS 27 only.
+- Bluetooth (2026-11-14): the WCN6750 through sheng's QcaBluetooth (`drivers/QcaBluetooth`), firmware read from the
+  `bluetooth_a/b` partition, iOS 27 only: the controller starts and scanning works. Pairing, Bluetooth audio and sleep/wake
+  are untested.
 
 **iPadOS 27.0.1 (24A446, the iPad17,3 images)** boots from UFS to the home screen on all eight cores (2026-11-11): touch and
 buttons work, the GPU add-on renders through Metal on the Adreno 810 (metal2vulkan and Turnip), the system apps are there,
@@ -38,7 +51,7 @@ icons load (rendered on the CPU) and the wallpaper shows on the home and lock sc
   the GPU after a hang, so a hang freezes the UI until a reboot;
 - iconservicesagent renders icons on the CPU (RenderBox aborted on the GPU once per boot);
 - Wi-Fi (WCN6750, an ath11k port) works and is on by default (`wifi=5` in `board.toml` since 2026-11-13; that image is not
-  yet booted): Settings lists networks and joins them, web pages load; Bluetooth is not started (see `porting.toml`, area `network`).
+  yet booted): Settings lists networks and joins them, web pages load (see `porting.toml`, area `network`); sound is enabled as on iOS 27 but not yet tested on iPadOS.
 
 iPadOS 17.7.11 (21H461) remains the board's default profile and boots to the desktop as before. `porting.toml` records each
 area; older test results are in `docs/asteroids-gpu-gen8.md` and `docs/asteroids-touch.md` of rootstockos/iosonandng.
