@@ -28,7 +28,9 @@ int fat_mount(FatVolume *v, uint64_t size, FatRead read, void *context)
         return FatNotFat;
     const uint64_t root_sectors = ((uint64_t)root * 32 + bps - 1) / bps;
     const uint64_t data_sector = reserved + (uint64_t)fats * fat_sectors + root_sectors;
-    if (total <= data_sector || (uint64_t)total * bps > size) return FatNotFat;
+    /* The volume may declare more sectors than its partition holds (the 3a's bluetooth_a: 64 MiB of FAT16 in 4 MiB, which Android
+     * mounts); the type comes from the declared size, the tables must fit, and every read stays bounded by the partition (vread). */
+    if (total <= data_sector || data_sector * bps > size) return FatNotFat;
     const uint64_t clusters = (total - data_sector) / spc;
     if (clusters < 4085) return FatNotFat;  /* FAT12 */
     v->fat32 = clusters >= 65525;
