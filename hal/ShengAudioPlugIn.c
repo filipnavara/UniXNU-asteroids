@@ -23,7 +23,11 @@
 #include <os/log.h>
 #include "ShengAudioAbi.h"
 
-enum {kPlugIn = kAudioObjectPlugInObject, kDevice = 2, kOutStream = 3, kInStream = 4, kVolume = 5};
+enum {kPlugIn = kAudioObjectPlugInObject, kDevice = 2, kOutStream = 3, kInStream = 4, kVolume = 5, kMute = 6};
+// asteroids: with the built-in transport ('bltn', audio-transport=0x626c746e) the device poses as an iPhone's "Codec" device. iOS 27's
+// VirtualAudio (DeviceSettings_D40Family, Device_Codec_Aspen) wraps the HAL device with that UID and gives it the built-in speaker port
+// ("Built-In Speaker", pspk) when the device has an output mute control on element 4 (3 is the receiver, 5 HAC), which kMute provides.
+// System sounds (lock, keyboard clicks) only route to that port; HDMI or Thunderbolt ports never get them.
 #define kPlugInBundleID "org.unixnu.sheng.audio"
 #define kDeviceUID "ShengAudioDevice"
 #define kModelUID "ShengAudioModel"
@@ -41,6 +45,9 @@ static pthread_mutex_t gLock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint gRefs = 1;
 static io_connect_t gConnect;
 static UInt32 gTransport = kAudioDeviceTransportTypeThunderbolt;
+static Boolean gMuted;
+static Boolean codecMode(void) {return gTransport == kAudioDeviceTransportTypeBuiltIn;}
+static CFStringRef deviceUID(void) {return codecMode() ? CFSTR("Codec") : CFSTR(kDeviceUID);}
 static ShengAudioControl *gControl;
 static int16_t *gOut, *gIn;
 static UInt32 gIoUsers;
@@ -204,6 +211,7 @@ static void trace(AudioObjectID o, const AudioObjectPropertyAddress *a, UInt32 k
 static OSStatus IsPropertySettable(AudioServerPlugInDriverRef d, AudioObjectID o, pid_t pid, const AudioObjectPropertyAddress *a, Boolean *out) {
     (void)d; (void)pid;
     *out = (o == kVolume && (a->mSelector == kAudioLevelControlPropertyScalarValue || a->mSelector == kAudioLevelControlPropertyDecibelValue)) ||
+           (o == kMute && codecMode() && a->mSelector == kAudioBooleanControlPropertyValue) ||
            ((o == kOutStream || o == kInStream) && (a->mSelector == kAudioStreamPropertyVirtualFormat || a->mSelector == kAudioStreamPropertyPhysicalFormat ||
                                                      a->mSelector == kAudioStreamPropertyIsActive)) ||
            (o == kDevice && a->mSelector == kAudioDevicePropertyNominalSampleRate);
@@ -216,7 +224,7 @@ static OSStatus IsPropertySettable(AudioServerPlugInDriverRef d, AudioObjectID o
 static const Float32 kMinDb = -36.0f;
 static Float32 toDb(Float32 scalar) {const Float32 r = 1.0f - (scalar < 0 ? 0 : scalar > 1 ? 1 : scalar); return kMinDb * r * r;}
 static Float32 toScalar(Float32 db) {return db <= kMinDb ? 0.0f : db >= 0 ? 1.0f : 1.0f - sqrtf(db / kMinDb);}
-static Float32 gain(void) {return gVolume <= 0.0f ? 0.0f : powf(10.0f, toDb(gVolume) / 20.0f);}
+static Float32 gain(void) {return gVolume <= 0.0f || gMuted ? 0.0f : powf(10.0f, toDb(gVolume) / 20.0f);}
 
 static OSStatus setProperty(AudioObjectID o, const AudioObjectPropertyAddress *a, UInt32 size, const void *data) {
     if (o == kVolume && size >= sizeof(Float32)) {
@@ -232,6 +240,13 @@ static OSStatus setProperty(AudioObjectID o, const AudioObjectPropertyAddress *a
         AudioObjectPropertyAddress changed[2] = {{kAudioLevelControlPropertyScalarValue, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
                                                  {kAudioLevelControlPropertyDecibelValue, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain}};
         gHost->PropertiesChanged(gHost, kVolume, 2, changed);
+        return 0;
+    }
+    if (o == kMute && codecMode() && a->mSelector == kAudioBooleanControlPropertyValue) {
+        if (size < sizeof(UInt32)) return kAudioHardwareBadPropertySizeError;
+        gMuted = *(const UInt32 *)data != 0;
+        AudioObjectPropertyAddress changed = {kAudioBooleanControlPropertyValue, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        gHost->PropertiesChanged(gHost, kMute, 1, &changed);
         return 0;
     }
     if ((o == kOutStream || o == kInStream) && (a->mSelector == kAudioStreamPropertyVirtualFormat || a->mSelector == kAudioStreamPropertyPhysicalFormat)) {
@@ -274,6 +289,7 @@ static UInt32 objects(AudioObjectID o, AudioObjectPropertyScope scope, AudioObje
         if (scope != kAudioObjectPropertyScopeInput) list[n++] = kOutStream;
         if (scope != kAudioObjectPropertyScopeOutput) list[n++] = kInStream;
         if (scope != kAudioObjectPropertyScopeInput) list[n++] = kVolume;
+        if (scope != kAudioObjectPropertyScopeInput && codecMode()) list[n++] = kMute;
     }
     return n;
 }
@@ -283,7 +299,7 @@ static OSStatus propertyData(AudioObjectID o, const AudioObjectPropertyAddress *
     const AudioObjectPropertySelector s = a->mSelector;
     // Lists every object answers, empty here: custom properties ('cust'), and on the plug-in its boxes and clock devices. The audio
     // server's device manager reads them for each new device and drops a device whose answer is an unknown-property error (i525).
-    if (o <= kVolume && (s == kAudioObjectPropertyCustomPropertyInfoList || ((s == kAudioPlugInPropertyBoxList ||
+    if ((o <= kVolume || (o == kMute && codecMode())) && (s == kAudioObjectPropertyCustomPropertyInfoList || ((s == kAudioPlugInPropertyBoxList ||
         s == kAudioPlugInPropertyClockDeviceList) && o == kPlugIn) || ((s == 'taps') && (o == kOutStream || o == kInStream)))) {
         *outDataSize = 0;
         return 0;
@@ -302,7 +318,7 @@ static OSStatus propertyData(AudioObjectID o, const AudioObjectPropertyAddress *
         }
         case kAudioPlugInPropertyTranslateUIDToDevice: {
             CFStringRef uid = qs >= sizeof(CFStringRef) ? *(const CFStringRef *)q : NULL;
-            REPLY(AudioObjectID, uid && CFStringCompare(uid, CFSTR(kDeviceUID), 0) == kCFCompareEqualTo ? kDevice : kAudioObjectUnknown);
+            REPLY(AudioObjectID, uid && CFStringCompare(uid, deviceUID(), 0) == kCFCompareEqualTo ? kDevice : kAudioObjectUnknown);
         }
         case kAudioPlugInPropertyResourceBundle: REPLY_STR("");
         default: return kAudioHardwareUnknownPropertyError;
@@ -314,7 +330,7 @@ static OSStatus propertyData(AudioObjectID o, const AudioObjectPropertyAddress *
         case kAudioObjectPropertyOwner: REPLY(AudioObjectID, kPlugIn);
         case kAudioObjectPropertyName: REPLY_STR("Speaker");
         case kAudioObjectPropertyManufacturer: REPLY_STR("UniXNU");
-        case kAudioDevicePropertyDeviceUID: REPLY_STR(kDeviceUID);
+        case kAudioDevicePropertyDeviceUID: REPLY(CFStringRef, deviceUID());
         case kAudioDevicePropertyModelUID: REPLY_STR(kModelUID);
         case kAudioObjectPropertyModelName: REPLY_STR("Speaker");
         case kAudioObjectPropertySerialNumber: REPLY_STR("0001");
@@ -368,11 +384,12 @@ static OSStatus propertyData(AudioObjectID o, const AudioObjectPropertyAddress *
         case kAudioObjectPropertyOwnedObjects:
         case kAudioDevicePropertyStreams:
         case kAudioObjectPropertyControlList: {
-            AudioObjectID list[3];
+            AudioObjectID list[4];
             UInt32 n = objects(kDevice, a->mScope, list), out = 0;
             for (UInt32 i = 0; i < n; ++i) {
-                if (s == kAudioDevicePropertyStreams && list[i] == kVolume) continue;
-                if (s == kAudioObjectPropertyControlList && list[i] != kVolume) continue;
+                const Boolean control = list[i] == kVolume || list[i] == kMute;
+                if (s == kAudioDevicePropertyStreams && control) continue;
+                if (s == kAudioObjectPropertyControlList && !control) continue;
                 if ((out + 1) * sizeof(AudioObjectID) > inDataSize) break;
                 ((AudioObjectID *)outData)[out++] = list[i];
             }
@@ -421,6 +438,18 @@ static OSStatus propertyData(AudioObjectID o, const AudioObjectPropertyAddress *
         case kAudioLevelControlPropertyConvertDecibelsToScalar:
             if (inDataSize < sizeof(Float32)) return kAudioHardwareBadPropertySizeError;
             *(Float32 *)outData = toScalar(*(Float32 *)outData); *outDataSize = sizeof(Float32); return 0;
+        default: return kAudioHardwareUnknownPropertyError;
+        }
+    case kMute:
+        if (!codecMode()) return kAudioHardwareBadObjectError;
+        switch (s) {
+        case kAudioObjectPropertyBaseClass: REPLY(AudioClassID, kAudioBooleanControlClassID);
+        case kAudioObjectPropertyClass: REPLY(AudioClassID, kAudioMuteControlClassID);
+        case kAudioObjectPropertyOwner: REPLY(AudioObjectID, kDevice);
+        case kAudioObjectPropertyOwnedObjects: *outDataSize = 0; return 0;
+        case kAudioControlPropertyScope: REPLY(AudioObjectPropertyScope, kAudioObjectPropertyScopeOutput);
+        case kAudioControlPropertyElement: REPLY(AudioObjectPropertyElement, 4);
+        case kAudioBooleanControlPropertyValue: REPLY(UInt32, gMuted ? 1u : 0u);
         default: return kAudioHardwareUnknownPropertyError;
         }
     default:
