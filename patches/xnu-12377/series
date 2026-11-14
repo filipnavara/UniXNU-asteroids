@@ -28,3 +28,6 @@ zzzzzzzzzc-board-wifi-supplicant-mount.patch
 # The read-only PMIC RTC's offset on Data (rootstockos/UniXNU patches/xnu/zzyd-native-rtc-offset.patch, ported to the 12377 call
 # site): restored before launchd, stored on every calendar set, so a network time survives a restart.
 zzzzzzzzzd-board-rtc-offset.patch
+# The native Bluetooth runtime (bluetooth=1): the add-on's bluetooth-lib/ over /usr/lib and bluetooth-bin/ over /usr/sbin (sheng's
+# sheng-bluetooth-runtime.patch).
+zzzzzzzzze-board-bluetooth-runtime-mount.patch

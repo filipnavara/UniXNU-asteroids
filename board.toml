@@ -471,6 +471,10 @@ kernel_args = ["-v", "serial=3", "debug=0x14e", "kt_fixed_zones=120", "-no_slto_
                # Speaker port, the only one system sounds route to (audio4/5, 2026-11-14: the ringtone preview plays). Thunderbolt ports are
                # refused on the iPhone (audio1), USB gets none (audio2), HDMI plays media but never system sounds (audio3).
                "audio-transport=0x626c746e",
+               # Bluetooth (the WCN6750 on QUPv3 wrapper 1 SE4: package/BluetoothProbe.cpp, drivers/QcaBluetooth for QCA_WCN6750), as
+               # sheng's iPadOS 27 board: the kernel starts the controller and the OS's own bluetoothd (native-routed, from the add-on's
+               # bluetooth-bin/) talks to it. log-bluetooth=1 adds the controller's log lines; 2 the boot capture rows.
+               "bluetooth=1", "log-bluetooth=1",
                # wpa_supplicant (an owner-trusted binary at /usr/libexec) fails AMFI's launch constraints, which only platform binaries
                # meet; UniXNU's zzyc-owner-skip-launch-constraints patch skips the check with this (sheng's board runs with it too).
                "no-lc=1"]
@@ -502,6 +506,11 @@ wifi_bin_prefix = "wifi-bin"
 # in progress") come with or without the copy.
 audio_tool = "scripts/build-sheng-audio-hal.py"
 audio_target = "arm64e-apple-ios27.0"
+# Bluetooth's userland (scripts/build-bluetooth-userspace.py): BlueTool, the OS's bluetoothd with sheng's native routing (the iPhone17,4
+# daemon is the iPad's file, sha256 cfd94854...) and QcaBTType0.dylib, in the add-on's bluetooth-bin/ and bluetooth-lib/
+# (patches/xnu-12377/zzzzzzzzze). The WCN6750 firmware stays on the phone's bluetooth partition (package/BluetoothFirmware.c).
+bluetooth_tool = "scripts/build-bluetooth-userspace.py"
+bluetooth_target = "ios27"
 
 [os_overrides."ios-27.0.1-24A446".payload.runtime.launchd_job_environment."com.apple.iconservices.iconservicesagent"]
 # The whole agent on the CPU. CoreImage looks its built-in kernels up by name (_asgDownH, its downsampler) and the plug-in's translator

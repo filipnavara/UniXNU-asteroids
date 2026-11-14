@@ -175,6 +175,20 @@ extern char native_wpss_services[160] __attribute__((weak_import));
 extern char native_wpss_files[256] __attribute__((weak_import));
 extern volatile uint32_t native_wpss_wlen[4] __attribute__((weak_import));
 extern char native_wpss_crash[224] __attribute__((weak_import));
+// asteroids: Bluetooth (BluetoothProbe.cpp, BluetoothFirmware.c, drivers/QcaBluetooth), sheng's rows.
+extern volatile uint64_t native_bluetooth_stats[32] __attribute__((weak_import));
+extern uint8_t native_bluetooth_boot_rx[512] __attribute__((weak_import));
+extern volatile uint32_t native_bluetooth_boot_rx_length __attribute__((weak_import));
+extern uint8_t native_bluetooth_boot_tail[256] __attribute__((weak_import));
+extern volatile uint32_t native_bluetooth_boot_tail_length __attribute__((weak_import));
+extern volatile uint32_t native_bluetooth_boot_state[12] __attribute__((weak_import));
+extern volatile uint32_t native_bluetooth_processes[4] __attribute__((weak_import));
+extern volatile uint64_t native_bluetooth_ibs[8] __attribute__((weak_import));
+extern char *volatile native_bluetooth_boot_text __attribute__((weak_import));
+extern volatile uint32_t native_bluetooth_boot_text_length __attribute__((weak_import));
+extern volatile uint32_t qbt_transport_activity[4] __attribute__((weak_import));
+extern volatile uint32_t native_bluetooth_firmware_source __attribute__((weak_import));
+extern char native_bluetooth_files[256] __attribute__((weak_import));
 extern volatile int32_t native_wlan_stats[16] __attribute__((weak_import));
 extern char native_wlan_bss[224] __attribute__((weak_import));
 extern char *native_wlan_lines __attribute__((weak_import));
@@ -860,6 +874,71 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(row, sizeof row, "[export] pieces=%u refused=%u generation=%u bytes=%u | complete generation=%u bytes=%u", native_adreno_export_stats[0],
              native_adreno_export_stats[1], native_adreno_export_stats[2], native_adreno_export_stats[3], export_ready, export_ready_bytes);
     at = put(out, at, cap, row, sizeof row);
+  }
+  if (&native_bluetooth_stats && (native_bluetooth_stats[0] || native_bluetooth_stats[14])) {
+    const volatile uint64_t *b=native_bluetooth_stats;char row[300];
+    snprintf(row,sizeof row,"[bluetooth] state=%llu error=%lld phase=%llu baud=%llu tx=%llu rx=%llu irq=%llu timeout=%llu sleep=%llu smmu=%llu/%llu fsr=%llx fw=%llx qup=%llx votes=%llx soc=%llx rompatch=%llx power=%llx owners=%llx",
+        b[0],(long long)b[1],b[14],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[18],b[19],b[20],b[21]);
+    at=put(out,at,cap,row,sizeof row);
+    snprintf(row,sizeof row,"[bluetooth uart] fault=%llx/%llx/%llx/%llx malformed=%llu unmatched=%llu dma=%llu/%llu errors=%llu/%llu loop=%llx/%llx",
+        b[22],b[23],b[24],b[25],b[26],b[27],b[28],b[29],b[15],b[16],b[30],b[31]);
+    at=put(out,at,cap,row,sizeof row);
+    if(&native_bluetooth_files && &native_bluetooth_firmware_source) {
+      snprintf(row,sizeof row,"[bluetooth fw] source=%u files %.200s",native_bluetooth_firmware_source,native_bluetooth_files);
+      at=put(out,at,cap,row,sizeof row);
+    }
+    if(&qbt_transport_activity) {
+      snprintf(row,sizeof row,"[bluetooth stack] power=%u state=%u connect=%u channel=%u",
+          qbt_transport_activity[0],qbt_transport_activity[1],qbt_transport_activity[2],qbt_transport_activity[3]);
+      at=put(out,at,cap,row,sizeof row);
+    }
+    if(&native_bluetooth_ibs) {
+      const volatile uint64_t *w=native_bluetooth_ibs;
+      snprintf(row,sizeof row,"[bluetooth ibs] wake_ind=%llu wake_ack=%llu sleep_ind=%llu reverts=%llu refused=%llu unarmed=%llu cancel_timeouts=%llu wakes=%llu",
+          (unsigned long long)w[0],(unsigned long long)w[1],(unsigned long long)w[2],(unsigned long long)w[3],(unsigned long long)w[4],
+          (unsigned long long)w[5],(unsigned long long)w[6],(unsigned long long)w[7]);
+      at=put(out,at,cap,row,sizeof row);
+    }
+    if(&native_bluetooth_processes) {
+      snprintf(row,sizeof row,"[bluetooth proc] bluetoothd=%u/%u BlueTool=%u/%u",
+          native_bluetooth_processes[0],native_bluetooth_processes[1],native_bluetooth_processes[2],native_bluetooth_processes[3]);
+      at=put(out,at,cap,row,sizeof row);
+    }
+    if(&native_bluetooth_boot_state && native_bluetooth_boot_state[0]) {
+      volatile uint32_t *s=native_bluetooth_boot_state;
+      snprintf(row,sizeof row,"[bluetooth boot] pins=%x/%x pre-tx-rx=%u status=%x m=%x s=%x tx=%x rx=%x fifo=%x rxlen=%u tlv=%x final=%x",
+          s[0],s[2],s[1],s[3],s[4],s[5],s[6],s[7],s[8],s[9],s[10],s[11]);
+      at=put(out,at,cap,row,sizeof row);
+    }
+    if(&native_bluetooth_boot_text_length && &native_bluetooth_boot_text && native_bluetooth_boot_text) {
+      uint32_t length=__atomic_load_n(&native_bluetooth_boot_text_length,__ATOMIC_ACQUIRE);
+      if(length>8192)length=8192;
+      for(uint32_t offset=0;offset<length;offset+=200) {
+        uint32_t n=length-offset;if(n>200)n=200;
+        snprintf(row,sizeof row,"[bluetooth boot text] %.*s",(int)n,native_bluetooth_boot_text+offset);
+        at=put(out,at,cap,row,sizeof row);
+      }
+    }
+    if(&native_bluetooth_boot_tail_length && &native_bluetooth_boot_tail) {
+      uint32_t total=__atomic_load_n(&native_bluetooth_boot_tail_length,__ATOMIC_ACQUIRE);
+      uint32_t count=total<256?total:256;
+      for(uint32_t offset=0;offset<count;offset+=32) {
+        int used=snprintf(row,sizeof row,"[bluetooth boot tail] %u/%u ",total-count+offset,total);
+        uint32_t n=count-offset;if(n>32)n=32;
+        for(uint32_t i=0;i<n;i++)used+=snprintf(row+used,sizeof row-(size_t)used,"%02x",native_bluetooth_boot_tail[(total-count+offset+i)%256]);
+        at=put(out,at,cap,row,sizeof row);
+      }
+    }
+    if(&native_bluetooth_boot_rx_length && &native_bluetooth_boot_rx) {
+      uint32_t length=__atomic_load_n(&native_bluetooth_boot_rx_length,__ATOMIC_ACQUIRE);
+      if(length>512)length=512;
+      for(uint32_t offset=0;offset<length;offset+=32) {
+        int used=snprintf(row,sizeof row,"[bluetooth boot rx] %u/%u ",offset,length);
+        uint32_t n=length-offset;if(n>32)n=32;
+        for(uint32_t i=0;i<n;i++)used+=snprintf(row+used,sizeof row-(size_t)used,"%02x",native_bluetooth_boot_rx[offset+i]);
+        at=put(out,at,cap,row,sizeof row);
+      }
+    }
   }
   // WiFi bring-up (WifiProbe.cpp): stage, GCC votes, PCIe0 GDSC, halted branches, WLAN_EN/SW_CTRL/PERST# pins, LTSSM, root port ID, link.
   if (&native_wifi_stats && native_wifi_stats[0]) {

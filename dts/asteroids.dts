@@ -22,6 +22,18 @@
         unixnu,adt-name = "wlan";
         status = "okay";
     };
+
+    // The WCN6750's Bluetooth (package/BluetoothProbe.cpp, bluetooth=1), as sheng's port exports its WCN7850: an H4 UART
+    // (transport-encoding 1) at 3.2 Mbaud. The probe checks both, fills local-mac-address and publishes a matching IOService before
+    // userland; bluetoothd reads the transport from here.
+    bluetooth {
+        device_type = "bluetooth";
+        compatible = "qcom,wcn6750-bt";
+        unixnu,adt-name = "bluetooth";
+        transport-encoding = <1>;
+        transport-speed = <3200000>;
+        status = "okay";
+    };
 };
 
 // The scheduler runs the A520 cores as an E cluster and the A720 cores as a P cluster (UniXNU's AMP patch, zzyf).

@@ -593,6 +593,22 @@ wifi_objects = [Path(line.split(' ', 1)[1]) for line in wifi_build.splitlines() 
 require(wifi_objects, 'build-ath11k-wifi.py built no objects')
 board_objects += wifi_objects
 print(f'WiFi module (ath11k): {len(wifi_objects)} objects')
+# asteroids: Bluetooth (bluetooth=1): the WCN6750's controller through QcaBluetooth (drivers/QcaBluetooth, sheng's component built for
+# QCA_WCN6750 by scripts/build-qca-bluetooth.py with the UART clock of package/AsteroidsGeniUart.c), the board's worker
+# (BluetoothProbe.cpp). QCA_BLUETOOTH_DIR names another
+# checkout of the component.
+BLUETOOTH = Path(os.environ.get('QCA_BLUETOOTH_DIR') or KITS.resolve().parent / 'drivers/QcaBluetooth')
+require((BLUETOOTH / 'include/qbt.h').is_file(), f'{BLUETOOTH}: the QcaBluetooth module is missing')
+compile_cpp(KITS / 'BluetoothProbe.cpp', board_dir / 'BluetoothProbe.o', ('-I', str(BLUETOOTH / 'include'), '-I', str(KITS)))
+board_objects.append(board_dir / 'BluetoothProbe.o')
+# Its firmware reader (package/BluetoothFirmware.c) is UniXNU's source storage runtime's (build-sheng-source-storage.py).
+bluetooth_build = subprocess.check_output(['python3', str(ROOT / 'scripts/build-qca-bluetooth.py'), str(BLUETOOTH),
+                                           str(board_dir / 'qca-bluetooth'), '--tree', str(ROOT), '--package', str(KITS)],
+                                          timeout=1800, text=True)
+bluetooth_objects = [Path(line.split(' ', 1)[1]) for line in bluetooth_build.splitlines() if line.startswith('OBJ ')]
+require(bluetooth_objects, 'build-qca-bluetooth.py built no objects')
+board_objects += bluetooth_objects
+print(f'Bluetooth (QcaBluetooth, WCN6750): {len(bluetooth_objects)} objects')
 # The audio DSP firmware reader (sheng_fw_*, which AdspProbe uses): a VFS reader, so with kern_exec's BSD flags, as iPadOS 17's
 # boot progress kit builds it (build-boot-progress.py).
 compile_c(KITS / 'AdspFirmware.c', board_dir / 'AdspFirmware.bsd.o', recipe='bsd/DEVELOPMENT/kern_exec.o.json',
@@ -611,6 +627,8 @@ sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp', ROOT / 'driv
            ROOT / 'drivers/GopFramebuffer/NativeHalfCodes.h', source, ABI_PATH, HID_ABI_PATH, keystore_source,
            ROOT / 'drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp', hid_source, hid_probe, *gmu_sources, *smmu_sources, *vote_sources,
            KITS / 'AsteroidsWifi.cpp', KITS / 'AsteroidsWifiFiles.c',
+           KITS / 'BluetoothProbe.cpp', KITS / 'BluetoothFirmware.c', KITS / 'BluetoothFirmware.h', KITS / 'WcnPower.h',
+           KITS / 'AppsSmmuLock.h', KITS / 'AsteroidsGeniUart.c', KITS / 'AsteroidsGeniUart.h',
            *kit_sources, *[KITS / (stem + '.cpp') for stem in ('CpuFreqProbe', 'PanelProbe', 'AdspProbe', 'WpssProbe', 'BatteryProbe', 'ButtonProbe',
                                                                'TouchState', 'AsteroidsAudioProbe', 'AsteroidsTouchProbe', 'GpuPowerProbe',
                                                                'AsteroidsBacklight', 'ShengAudioService', 'ShengBattery')],
