@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-// From UniXNU-sheng hal/ShengAudioPlugIn.c (BSD-2-Clause-Patent), unchanged: on the 3a the output stream is the two speakers, and the
-// input stream stays silent (no capture path yet).
+// From UniXNU-sheng hal/ShengAudioPlugIn.c 0215f34 (BSD-2-Clause-Patent), unchanged: on the 3a the output stream is the two speakers and
+// the input stream the WCD9378 microphone (asteroids-mic=8).
 // The sheng built-in audio device for the iOS audio server: one device with a stereo output stream (the six speakers) and a mono input
 // stream (the microphones). Samples move through rings shared with the kernel service ShengAudio (package/ShengAudioAbi.h); the service
 // feeds the audio DSP. Objects: the plug-in (1), the device (2), the output stream (3), the input stream (4), the output volume (5).
 #include <CoreAudio/AudioServerPlugIn.h>
+#include <TargetConditionals.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
+#if __has_feature(ptrauth_calls)
+#include <ptrauth.h>
+#endif
 #include <IOKit/IOKitLib.h>
 #include <mach/mach_time.h>
 #include <mach/mach.h>
@@ -77,10 +81,23 @@ static kern_return_t call(uint32_t selector) {return gConnect ? IOConnectCallSca
 // is taken from those two instructions and the service sets the constant (on the shared page it cannot be written from here).
 static void setHostClock(void) {
     ShengAudioDiag *diag = (ShengAudioDiag *)((uint8_t *)gControl + SHENG_AUDIO_DIAG_OFFSET);
-    // The audio server is arm64e: dlsym signs the pointer, and this arm64 code neither reads nor calls through the signature bits.
-    const uintptr_t symbol = (uintptr_t)dlsym(RTLD_DEFAULT, "AudioGetHostClockFrequency") & (((uintptr_t)1 << 47) - 1);
-    if (!symbol) {diag->host_clock_result = -1; return;}
+#if TARGET_OS_OSX
+    // macOS keeps the constant in CoreAudio's __TEXT,__const, a code-signed page: rewriting it invalidated the page and the kernel killed
+    // the driver service helper (SIGKILL, Code Signature Invalid, macOS run32). The clock difference stays to be handled another way.
+    diag->host_clock_result = -2;
+    return;
+#endif
+    // dlsym signs the pointer for an arm64e caller: the code is read through the stripped address and called through the signed one
+    // (an arm64 build sees the signature bits only in an arm64e server, and neither reads nor calls through them).
+    void *const signed_symbol = dlsym(RTLD_DEFAULT, "AudioGetHostClockFrequency");
+#if __has_feature(ptrauth_calls)
+    const uintptr_t symbol = (uintptr_t)ptrauth_strip(signed_symbol, ptrauth_key_function_pointer);
+    Float64 (*frequency)(void) = (Float64 (*)(void))signed_symbol;
+#else
+    const uintptr_t symbol = (uintptr_t)signed_symbol & (((uintptr_t)1 << 47) - 1);
     Float64 (*frequency)(void) = (Float64 (*)(void))symbol;
+#endif
+    if (!symbol) {diag->host_clock_result = -1; return;}
     const uint32_t *code = (const uint32_t *)symbol, adrp = code[0], ldr = code[1];
     if ((adrp & 0x9f000000u) != 0x90000000u || (ldr & 0xffc00000u) != 0xfd400000u || ((ldr >> 5) & 31) != (adrp & 31)) {
         diag->host_clock_result = -1;
@@ -114,7 +131,33 @@ static ULONG AddRef(void *self) {(void)self; return atomic_fetch_add(&gRefs, 1) 
 static ULONG Release(void *self) {(void)self; UInt32 r = atomic_load(&gRefs); if (r) r = atomic_fetch_sub(&gRefs, 1) - 1; return r;}
 
 // Connects at once, so the service sees the audio server load the plug-in; a failure here is retried at the first StartIO.
+// The I/O thread runs this image's code and data every cycle. Under memory pressure a page of them that was paged out costs the
+// cycle a page-in (the audio server counts it as an overload with "PageFaultsOnIOThread"), so the image's segments stay resident.
+// A refused mlock (a sandbox or a limit) changes nothing.
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <sys/mman.h>
+static void keepImageResident(void) {
+    Dl_info info;
+    if (!dladdr((const void *)&keepImageResident, &info) || !info.dli_fbase) return;
+    const struct mach_header_64 *header = info.dli_fbase;
+    if (header->magic != MH_MAGIC_64) return;
+    intptr_t slide = 0;
+    const struct load_command *command = (const struct load_command *)(header + 1);
+    const struct load_command *first = command;
+    for (uint32_t i = 0; i < header->ncmds; ++i, command = (const struct load_command *)((const uint8_t *)command + command->cmdsize)) {
+        const struct segment_command_64 *segment = (const struct segment_command_64 *)command;
+        if (command->cmd == LC_SEGMENT_64 && !strcmp(segment->segname, "__TEXT")) slide = (intptr_t)header - (intptr_t)segment->vmaddr;
+    }
+    command = first;
+    for (uint32_t i = 0; i < header->ncmds; ++i, command = (const struct load_command *)((const uint8_t *)command + command->cmdsize)) {
+        const struct segment_command_64 *segment = (const struct segment_command_64 *)command;
+        if (command->cmd != LC_SEGMENT_64 || !segment->vmsize || !strcmp(segment->segname, "__LINKEDIT")) continue;
+        (void)mlock((const void *)(uintptr_t)(segment->vmaddr + (uint64_t)slide), (size_t)segment->vmsize);
+    }
+}
 static OSStatus Initialize(AudioServerPlugInDriverRef d, AudioServerPlugInHostRef host) {
+    keepImageResident();
     (void)d;
     gHost = host;
     pthread_mutex_lock(&gLock);
@@ -509,13 +552,16 @@ static void rebind(const struct mach_header_64 *h, intptr_t slide) {
         }
     }
 }
-static void imageAdded(const struct mach_header *h, intptr_t slide) {
+__attribute__((unused)) static void imageAdded(const struct mach_header *h, intptr_t slide) {
     Dl_info info;
     if (h->magic != MH_MAGIC_64 || !dladdr(h, &info) || !info.dli_fname || !strstr(info.dli_fname, "VirtualAudio.plugin/")) return;
     gVaBase = (uintptr_t)h;
     rebind((const struct mach_header_64 *)h, slide);
 }
+// arm64e (iPadOS 27's server): the symbol pointers are authenticated with their slot address, so a plain rebind faults; the trace is off.
+#if !__has_feature(ptrauth_calls)
 __attribute__((constructor)) static void watchAudioServer(void) {_dyld_register_func_for_add_image(imageAdded);}
+#endif
 
 // ---- IO ----------------------------------------------------------------------------------------------------------------------------
 static OSStatus StartIO(AudioServerPlugInDriverRef d, AudioObjectID o, UInt32 client) {
