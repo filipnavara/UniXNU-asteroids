@@ -41,7 +41,11 @@ static const char lite_jobs[]=
  // statistics services have nothing to advise on here (sheng: PerfPowerServices held 1.8 of 7 CPUs while it wrote its power database).
  "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration,com.apple.coreduetd,"
  "com.apple.PerfPowerServices,com.apple.PerfPowerServicesExtended,com.apple.perfpowermetricd,com.apple.siriinferenced,"
- "com.apple.siriknowledged,com.apple.siriactionsd,com.apple.duetexpertd,com.apple.modelcatalogd";
+ "com.apple.siriknowledged,com.apple.siriactionsd,com.apple.duetexpertd,com.apple.modelcatalogd,"
+ // iOS 27 (iPhone17,4), merged1: KeepAlive daemons that exit(0) within seconds, so launchd respawns each every 10 s all boot (about
+ // 30 launches apiece): fairplayd.H2 is the iPhone's fairplayd.A2, fskitd cannot hand its mach port to the kernel (no FSKit there),
+ // aonsensed asks Wi-Fi for its interface and exits.
+ "com.apple.fairplayd.H2,com.apple.filesystems.fskitd,com.apple.aonsensed";
 static char policy[4096],jobs[200];
 volatile int sheng_watchdog_policy_status=-1;
 
