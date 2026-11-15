@@ -24,20 +24,25 @@ UniXNU's:
 | `drivers/GopFramebuffer` | [filipnavara/GopFramebuffer](https://github.com/filipnavara/GopFramebuffer) (branch `asteroids-27`: UniXNU's current driver with this board's scanout pipes; `asteroids` holds the iPadOS 17 fork) | GOP framebuffer, zero-copy scanout and the GPU copy presenter |
 | `kits/AdrenoFirmware` | [filipnavara/AdrenoFirmware](https://github.com/filipnavara/AdrenoFirmware) (branch `asteroids`) | GMU/HFI kit with the A8xx performance table and votes |
 
-## State (2026-11-14)
+## State (2026-11-15)
 
 **iOS 27.0.1 (24A446, the iPhone17,4 images)** boots to the UI on the DEVELOPMENT kernel (2026-11-14; the iPhone
 kernelcache leaves less room, so `patches/xnu-12377-ios27` moves DTrace's probe records out of `__DATA_CONST`). It is
 somewhat sluggish and the wallpaper appears late. Typing in Settings pins a core: dictation availability keeps changing and
-each change rebuilds the iPhone keyboard's dock.
+each change rebuilds the iPhone keyboard's dock. Sound, Bluetooth and Wi-Fi run together in one image (2026-11-14, the
+merged `asteroids-resync`); Wi-Fi scans (36 networks seen) but was not joined to a network in those boots.
 
 - Sound (2026-11-14): no 27 profile had ever enabled it (`audio=1` and the audio server plug-in were missing). With both,
   the plug-in posing as the built-in Codec device, a ringtone preview plays through the speakers; the lock and keyboard
-  clicks are still silent and the microphone is untested. Since the add-on's `audio/` mount, the Bluetooth HAL plug-in's
+  clicks are still silent; capture runs, but what the microphone records is unchecked. Since the add-on's `audio/` mount, the Bluetooth HAL plug-in's
   XPC listeners fail in a loop in the audio server. Tested on iOS 27 only.
 - Bluetooth (2026-11-14): the WCN6750 through sheng's QcaBluetooth (`drivers/QcaBluetooth`), firmware read from the
   `bluetooth_a/b` partition, iOS 27 only: the controller starts and scanning works. Pairing, Bluetooth audio and sleep/wake
   are untested.
+- Restart: most restarts on 27 (iOS and iPadOS) ended in a `vnode_rele_ext: usecount -ve` panic when the root was
+  unmounted; the 27 kernels lacked UniXNU's kernproc root reference fix (`native-union-root-checkdirs.patch`, only in the
+  iPadOS 17 series). UniXNU 69520db adds it to the 27 series (upstream UniXNU/UniXNU#248); with it one restart completed
+  without the panic.
 
 **iPadOS 27.0.1 (24A446, the iPad17,3 images)** boots from UFS to the home screen on all eight cores (2026-11-11): touch and
 buttons work, the GPU add-on renders through Metal on the Adreno 810 (metal2vulkan and Turnip), the system apps are there,
